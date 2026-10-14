@@ -47,21 +47,15 @@ type Message struct {
 	ID                int              `json:"id"`
 	IsMeMessage       bool             `json:"is_me_message"`
 	LastEditTimestamp int              `json:"last_edit_timestamp"`
-	Reactions         []struct {
-		EmojiName    string           `json:"emoji_name"`
-		EmojiCode    string           `json:"emoji_code"`
-		ReactionType string           `json:"reaction_type"`
-		UserID       int              `json:"user_id"`
-		User         DisplayRecipient `json:"user"`
-	} `json:"reactions"`
-	RecipientID    int    `json:"recipient_id"`
-	SenderEmail    string `json:"sender_email"`
-	SenderFullName string `json:"sender_full_name"`
-	SenderID       int    `json:"sender_id"`
-	SenderRealmStr string `json:"sender_realm_str"`
-	StreamID       int    `json:"stream_id"`
-	Subject        string `json:"subject"`
-	Submessages    []struct {
+	Reactions         []Reaction       `json:"reactions"`
+	RecipientID       int              `json:"recipient_id"`
+	SenderEmail       string           `json:"sender_email"`
+	SenderFullName    string           `json:"sender_full_name"`
+	SenderID          int              `json:"sender_id"`
+	SenderRealmStr    string           `json:"sender_realm_str"`
+	StreamID          int              `json:"stream_id"`
+	Subject           string           `json:"subject"`
+	Submessages       []struct {
 		MsgType   string `json:"msg_type"`
 		Content   string `json:"content"`
 		MessageID int    `json:"message_id"`
@@ -77,6 +71,13 @@ type Message struct {
 	Flags        []string `json:"flags"`
 	MatchContent string   `json:"match_content"`
 	MathSubject  string   `json:"match_subject"`
+}
+
+type Reaction struct {
+	EmojiName    string `json:"emoji_name"`
+	EmojiCode    string `json:"emoji_code"`
+	ReactionType string `json:"reaction_type"`
+	UserID       int    `json:"user_id"`
 }
 
 type DisplayRecipient struct {
@@ -145,6 +146,7 @@ type getMessageOptions struct {
 		fieldName string
 		value     []int
 	}
+	allowEmptyTopicName bool
 
 	// deprecated: useFirstUnreadAnchor Legacy way to specify "anchor": "first_unread" in Zulip 2.1.x and older.
 	// useFirstUnreadAnchor struct {
@@ -211,6 +213,14 @@ func MessageIDs(messageIDs []int) GetMessageOption {
 	}
 }
 
+// AllowEmptyTopicName makes the server return the actual empty topic name instead of
+// realm_empty_topic_display_name for messages in the "general chat" topic.
+func AllowEmptyTopicName() GetMessageOption {
+	return func(o *getMessageOptions) {
+		o.allowEmptyTopicName = true
+	}
+}
+
 func (svc *Service) GetMessages(ctx context.Context, options ...GetMessageOption) (*GetMessagesResponse, error) {
 	const (
 		method = http.MethodGet
@@ -258,7 +268,15 @@ func (svc *Service) GetMessages(ctx context.Context, options ...GetMessageOption
 	}
 
 	if opts.messageIDs.value != nil {
-		msg[opts.messageIDs.fieldName] = opts.messageIDs.value
+		messageIDsJSON, err := json.Marshal(opts.messageIDs.value)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling message IDs: %w", err)
+		}
+		msg[opts.messageIDs.fieldName] = string(messageIDsJSON)
+	}
+
+	if opts.allowEmptyTopicName {
+		msg["allow_empty_topic_name"] = true
 	}
 
 	resp := GetMessagesResponse{}

@@ -36,6 +36,7 @@ type fetchSingleMessageOptions struct {
 		fieldName string
 		value     *bool
 	}
+	allowEmptyTopicName bool
 }
 
 type FetchSingleMessageOption func(*fetchSingleMessageOptions)
@@ -44,6 +45,14 @@ func ApplyMarkdownSingleMessage(applyMarkdown bool) FetchSingleMessageOption {
 	return func(o *fetchSingleMessageOptions) {
 		o.applyMarkdown.fieldName = "apply_markdown"
 		o.applyMarkdown.value = &applyMarkdown
+	}
+}
+
+// AllowEmptyTopicNameSingleMessage makes the server return the actual empty topic name instead of
+// realm_empty_topic_display_name for messages in the "general chat" topic.
+func AllowEmptyTopicNameSingleMessage() FetchSingleMessageOption {
+	return func(o *fetchSingleMessageOptions) {
+		o.allowEmptyTopicName = true
 	}
 }
 
@@ -64,6 +73,10 @@ func (svc *Service) FetchSingleMessage(ctx context.Context, messageID int, optio
 
 	if opts.applyMarkdown.value != nil {
 		msg[opts.applyMarkdown.fieldName] = *opts.applyMarkdown.value
+	}
+
+	if opts.allowEmptyTopicName {
+		msg["allow_empty_topic_name"] = true
 	}
 
 	resp := FetchSingleMessageResponse{}

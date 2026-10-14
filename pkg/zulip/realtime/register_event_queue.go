@@ -23,6 +23,42 @@ type registerEventQueueData struct {
 	LastEventID       int    `json:"last_event_id"`
 	QueueID           string `json:"queue_id"`
 	ZulipVersion      string `json:"zulip_version"`
+
+	// Initial state fields, only present if the corresponding event type is in fetch_event_types.
+	Subscriptions              []events.SubscriptionData   `json:"subscriptions"`
+	UnreadMsgs                 *UnreadMessages             `json:"unread_msgs"`
+	RecentPrivateConversations []RecentPrivateConversation `json:"recent_private_conversations"`
+	UserTopics                 []events.UserTopicData      `json:"user_topics"`
+	RealmEmptyTopicDisplayName string                      `json:"realm_empty_topic_display_name"`
+}
+
+type UnreadMessages struct {
+	Count             int                 `json:"count"`
+	PMs               []UnreadDirect      `json:"pms"`
+	Streams           []UnreadStreamTopic `json:"streams"`
+	Huddles           []UnreadGroupDirect `json:"huddles"`
+	OldUnreadsMissing bool                `json:"old_unreads_missing"`
+}
+
+type UnreadDirect struct {
+	OtherUserID      int   `json:"other_user_id"`
+	UnreadMessageIDs []int `json:"unread_message_ids"`
+}
+
+type UnreadStreamTopic struct {
+	StreamID         int    `json:"stream_id"`
+	Topic            string `json:"topic"`
+	UnreadMessageIDs []int  `json:"unread_message_ids"`
+}
+
+type UnreadGroupDirect struct {
+	UserIDsString    string `json:"user_ids_string"`
+	UnreadMessageIDs []int  `json:"unread_message_ids"`
+}
+
+type RecentPrivateConversation struct {
+	MaxMessageID int   `json:"max_message_id"`
+	UserIDs      []int `json:"user_ids"`
 }
 
 func (r *RegisterEventQueueResponse) UnmarshalJSON(b []byte) error {

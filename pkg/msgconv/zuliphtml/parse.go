@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,13 +18,18 @@ import (
 	"go.mau.fi/mautrix-zulip/pkg/zid"
 )
 
+// Parse converts Zulip-rendered message HTML into Matrix HTML.
+//
+// If replyTargetExists is non-nil, Zulip's "quote and reply" prefix is detected, and if the function returns true
+// for the quoted message ID, the quote is removed so that it can be rendered as a native reply instead.
 func Parse(
-	ctx context.Context, bridge *bridgev2.Bridge, baseURL, inputHTML string,
+	ctx context.Context, bridge *bridgev2.Bridge, baseURL, inputHTML string, replyTargetExists func(int) bool,
 ) (outputHTML string, attachments []Attachment, mentions *event.Mentions, err error) {
 	parser := &zulipHTMLParser{
-		ctx:     ctx,
-		br:      bridge,
-		baseURL: baseURL,
+		ctx:               ctx,
+		br:                bridge,
+		baseURL:           baseURL,
+		replyTargetExists: replyTargetExists,
 	}
 	err = parser.Parse(inputHTML)
 	return parser.output, parser.attachments, &parser.mentions, err
@@ -42,6 +48,8 @@ type zulipHTMLParser struct {
 	output      string
 	attachments []Attachment
 	mentions    event.Mentions
+
+	replyTargetExists func(int) bool
 }
 
 func (zhp *zulipHTMLParser) Parse(input string) error {
@@ -51,7 +59,11 @@ func (zhp *zulipHTMLParser) Parse(input string) error {
 	}
 	bodyNode := findChild(node, atom.Body, "")
 	if bodyNode != nil {
+		zhp.stripQuoteReply(bodyNode)
 		node = bodyNode.FirstChild
+		if node == nil {
+			node = &html.Node{Type: html.TextNode}
+		}
 	}
 	if node.NextSibling == nil && node.DataAtom == atom.P {
 		node = node.FirstChild
@@ -318,4 +330,61 @@ func (zhp *zulipHTMLParser) processUserMention(node *html.Node) (bool, error) {
 
 func (zhp *zulipHTMLParser) processTopicMention(node *html.Node) (bool, error) {
 	return false, nil
+}
+
+var nearMessageRegex = regexp.MustCompile(`/near/(\d+)$`)
+
+// stripQuoteReply detects the format Zulip uses for "quote and reply":
+//
+//	<p><span class="user-mention silent" ...>Name</span> <a href=".../near/123">said</a>:</p>
+//	<blockquote>...</blockquote>
+//
+// If the quoted message has been bridged, both elements are removed and the message becomes a native reply.
+func (zhp *zulipHTMLParser) stripQuoteReply(body *html.Node) {
+	if zhp.replyTargetExists == nil {
+		return
+	}
+	first := nextElement(body.FirstChild)
+	if first == nil || first.DataAtom != atom.P {
+		return
+	}
+	quote := nextElement(first.NextSibling)
+	if quote == nil || quote.DataAtom != atom.Blockquote {
+		return
+	}
+	mention := findChild(first, atom.Span, "user-mention")
+	link := findChild(first, atom.A, "")
+	if mention == nil || link == nil || !strings.HasSuffix(strings.TrimSpace(nodeText(first)), ":") {
+		return
+	}
+	href, _ := getAttribute(link.Attr, "href")
+	match := nearMessageRegex.FindStringSubmatch(href)
+	if match == nil {
+		return
+	}
+	messageID, err := strconv.Atoi(match[1])
+	if err != nil || !zhp.replyTargetExists(messageID) {
+		return
+	}
+	for node := body.FirstChild; node != nil; {
+		next := node.NextSibling
+		body.RemoveChild(node)
+		if node == quote {
+			break
+		}
+		node = next
+	}
+	// Remove leading whitespace text nodes left after the quote
+	for body.FirstChild != nil && body.FirstChild.Type == html.TextNode && strings.TrimSpace(body.FirstChild.Data) == "" {
+		body.RemoveChild(body.FirstChild)
+	}
+}
+
+func nextElement(node *html.Node) *html.Node {
+	for ; node != nil; node = node.NextSibling {
+		if node.Type == html.ElementNode {
+			return node
+		}
+	}
+	return nil
 }

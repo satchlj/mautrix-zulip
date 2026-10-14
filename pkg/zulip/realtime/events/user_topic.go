@@ -12,7 +12,7 @@ type UserTopicData struct {
 	StreamID         int    `json:"stream_id"`
 	TopicName        string `json:"topic_name"`
 	LastUpdated      int    `json:"last_updated"`
-	VisibilityPolicy string `json:"visibility_policy"`
+	VisibilityPolicy int    `json:"visibility_policy"`
 }
 
 func (e *UserTopic) EventID() int {
@@ -26,3 +26,10 @@ func (e *UserTopic) EventType() EventType {
 func (e *UserTopic) EventOp() string {
 	return string(UserTopicType)
 }
+
+const (
+	VisibilityPolicyNone     = 0
+	VisibilityPolicyMuted    = 1
+	VisibilityPolicyUnmuted  = 2
+	VisibilityPolicyFollowed = 3
+)

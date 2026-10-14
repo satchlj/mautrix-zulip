@@ -8,7 +8,9 @@ import (
 
 func (zc *ZulipConnector) GetDBMetaTypes() database.MetaTypes {
 	return database.MetaTypes{
-		Portal:   nil,
+		Portal: func() any {
+			return &zid.PortalMetadata{}
+		},
 		Ghost:    nil,
 		Message:  nil,
 		Reaction: nil,

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.mau.fi/util/ptr"
@@ -18,6 +19,7 @@ import (
 
 	"go.mau.fi/mautrix-zulip/pkg/zid"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/channels"
+	"go.mau.fi/mautrix-zulip/pkg/zulip/realtime/events"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/users"
 )
 
@@ -26,26 +28,92 @@ func (zc *ZulipClient) IsThisUser(ctx context.Context, userID networkid.UserID) 
 }
 
 func (zc *ZulipClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	streamID, userIDs, err := zid.ParsePortalID(portal.ID)
+	parsed, err := zid.ParsePortalID(portal.ID)
 	if err != nil {
 		return nil, err
-	} else if userIDs != nil {
-		return zc.wrapDMInfo(userIDs)
-	} else {
-		srv := channels.NewService(zc.Client)
-		chat, err := srv.GetChannelByID(ctx, streamID)
-		if err != nil {
-			return nil, err
-		}
-		members, err := srv.GetChannelSubscribers(ctx, streamID)
-		if err != nil {
-			return nil, err
-		}
-		return zc.wrapChannelInfo(chat.Stream, members.Subscribers)
+	} else if parsed.IsDM() {
+		return zc.wrapDMInfo(parsed.UserIDs), nil
+	}
+	stream, err := zc.fetchStream(ctx, parsed.StreamID)
+	if err != nil {
+		return nil, err
+	}
+	return zc.wrapTopicInfo(stream, zc.getTopicName(portal)), nil
+}
+
+// fetchStream returns the cached info of a channel, or fetches it from the server if it's not cached.
+func (zc *ZulipClient) fetchStream(ctx context.Context, streamID int) (*events.SubscriptionData, error) {
+	if stream := zc.getStream(streamID); stream != nil {
+		return stream, nil
+	}
+	resp, err := channels.NewService(zc.Client).GetChannelByID(ctx, streamID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel info: %w", err)
+	}
+	// Not caching this, because the channel isn't subscribed (otherwise it would've been in the cache already)
+	return &events.SubscriptionData{
+		StreamID:    resp.Stream.StreamID,
+		Name:        resp.Stream.Name,
+		Description: resp.Stream.Description,
+	}, nil
+}
+
+// getTopicName returns the case-preserved name of the topic a portal is for.
+func (zc *ZulipClient) getTopicName(portal *bridgev2.Portal) string {
+	zc.cacheLock.RLock()
+	name, ok := zc.topicNames[portal.ID]
+	zc.cacheLock.RUnlock()
+	if ok {
+		return name
+	} else if meta, ok := portal.Metadata.(*zid.PortalMetadata); ok && meta.Topic != "" {
+		return meta.Topic
+	}
+	parsed, _ := zid.ParsePortalID(portal.ID)
+	return parsed.TopicKey
+}
+
+func (zc *ZulipClient) topicDisplayName(topic string) string {
+	if topic == "" {
+		return zc.emptyTopicName
+	}
+	return topic
+}
+
+func (zc *ZulipClient) wrapTopicInfo(stream *events.SubscriptionData, topic string) *bridgev2.ChatInfo {
+	mutedUntil := &bridgev2.Unmuted
+	if zc.isMuted(stream.StreamID, &topic) {
+		mutedUntil = &event.MutedForever
+	}
+	return &bridgev2.ChatInfo{
+		Name:  ptr.Ptr(zc.Main.Config.FormatTopicName(stream.Name, zc.topicDisplayName(topic))),
+		Topic: &stream.Description,
+		Members: &bridgev2.ChatMemberList{
+			// Channels can have thousands of subscribers, so only add participants to topic rooms as they appear.
+			IsFull: false,
+			MemberMap: map[networkid.UserID]bridgev2.ChatMember{
+				zid.MakeUserID(zc.ownUserID): {
+					EventSender: zc.makeEventSender(zc.ownUserID),
+					Membership:  event.MembershipJoin,
+				},
+			},
+		},
+		Type:        ptr.Ptr(database.RoomTypeDefault),
+		CanBackfill: true,
+		UserLocal: &bridgev2.UserLocalPortalInfo{
+			MutedUntil: mutedUntil,
+		},
+		ExtraUpdates: func(ctx context.Context, portal *bridgev2.Portal) bool {
+			meta := portal.Metadata.(*zid.PortalMetadata)
+			if meta.Topic != topic {
+				meta.Topic = topic
+				return true
+			}
+			return false
+		},
 	}
 }
 
-func (zc *ZulipClient) wrapDMInfo(members []int) (*bridgev2.ChatInfo, error) {
+func (zc *ZulipClient) wrapDMInfo(members []int) *bridgev2.ChatInfo {
 	var otherUserID networkid.UserID
 	portalType := database.RoomTypeGroupDM
 	if len(members) == 1 {
@@ -60,12 +128,13 @@ func (zc *ZulipClient) wrapDMInfo(members []int) (*bridgev2.ChatInfo, error) {
 	return &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
 			IsFull:           true,
-			TotalMemberCount: len(members),
+			TotalMemberCount: len(memberMap),
 			MemberMap:        memberMap,
 			OtherUserID:      otherUserID,
 		},
-		Type: &portalType,
-	}, nil
+		Type:        &portalType,
+		CanBackfill: true,
+	}
 }
 
 func (zc *ZulipClient) makeMemberMap(members []int) map[networkid.UserID]bridgev2.ChatMember {
@@ -79,33 +148,27 @@ func (zc *ZulipClient) makeMemberMap(members []int) map[networkid.UserID]bridgev
 	return memberMap
 }
 
-func (zc *ZulipClient) wrapChannelInfo(channel channels.ChannelInfo, members []int) (*bridgev2.ChatInfo, error) {
-	return &bridgev2.ChatInfo{
-		Name:  &channel.Name,
-		Topic: &channel.Description,
-		Members: &bridgev2.ChatMemberList{
-			IsFull:           members != nil,
-			TotalMemberCount: len(members),
-			MemberMap:        zc.makeMemberMap(members),
-			PowerLevels:      nil, // TODO
-		},
-		Type: ptr.Ptr(database.RoomTypeDefault),
-	}, nil
-}
-
 func (zc *ZulipClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	user, err := users.NewService(zc.Client).GetUser(ctx, zid.ParseUserID(ghost.ID))
 	if err != nil {
 		return nil, err
 	}
-	return wrapUserInfo(user.User)
+	return zc.wrapUserInfo(user.User)
+}
+
+// absoluteURL resolves server-relative URLs (like /user_uploads/...) against the Zulip server URL.
+func (zc *ZulipClient) absoluteURL(url string) string {
+	if strings.HasPrefix(url, "/") && !strings.HasPrefix(url, "//") {
+		return strings.TrimSuffix(zc.UserLogin.Metadata.(*zid.UserLoginMetadata).URL, "/") + url
+	}
+	return url
 }
 
 var AvatarClient = &http.Client{
 	Timeout: 20 * time.Second,
 }
 
-func wrapUserInfo(user users.UserData) (*bridgev2.UserInfo, error) {
+func (zc *ZulipClient) wrapUserInfo(user users.UserData) (*bridgev2.UserInfo, error) {
 	var identifiers []string
 	if user.DeliveryEmail != "" {
 		identifiers = []string{"mailto:" + user.DeliveryEmail}
@@ -113,7 +176,7 @@ func wrapUserInfo(user users.UserData) (*bridgev2.UserInfo, error) {
 	return &bridgev2.UserInfo{
 		Identifiers: identifiers,
 		Name:        &user.FullName,
-		Avatar:      wrapAvatar(user.AvatarVersion, user.AvatarURL, user.DeliveryEmail),
+		Avatar:      wrapAvatar(user.AvatarVersion, zc.absoluteURL(user.AvatarURL), user.DeliveryEmail),
 		IsBot:       &user.IsBot,
 	}, nil
 }
@@ -137,7 +200,9 @@ func wrapAvatar(version int, url, email string) *bridgev2.Avatar {
 			resp, err := AvatarClient.Do(req)
 			if err != nil {
 				return nil, err
-			} else if resp.StatusCode >= 300 {
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
 				return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
 			}
 			return io.ReadAll(resp.Body)

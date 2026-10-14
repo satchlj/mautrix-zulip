@@ -77,6 +77,12 @@ func (g *GetEventsEventQueueResponse) UnmarshalJSON(data []byte) error {
 			ev = &events.UserStatus{}
 		case events.ReactionType:
 			ev = &events.Reaction{}
+		case events.UpdateMessageFlagsType:
+			ev = &events.UpdateMessageFlags{}
+		case events.SubscriptionType:
+			ev = &events.Subscription{}
+		case events.StreamType:
+			ev = &events.Stream{}
 		default:
 			ev = &events.Unknown{}
 		}
@@ -87,7 +93,9 @@ func (g *GetEventsEventQueueResponse) UnmarshalJSON(data []byte) error {
 		}
 
 		if err := json.Unmarshal(itemData, ev); err != nil {
-			return err
+			// Don't let a single unexpectedly formatted event break the whole event stream.
+			unknown := events.Unknown(e)
+			ev = &unknown
 		}
 
 		g.Events = append(g.Events, ev)

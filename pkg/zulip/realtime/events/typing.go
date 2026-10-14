@@ -9,6 +9,8 @@ type Typing struct {
 	Recipients  []Recipient `json:"recipients"`
 	Sender      Sender      `json:"sender"`
 	Type        EventType   `json:"type"`
+	StreamID    int         `json:"stream_id"`
+	Topic       string      `json:"topic"`
 }
 
 type Recipient struct {

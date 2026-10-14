@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
@@ -42,7 +43,7 @@ func (zl *ZulipLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
 		StepID:       "fi.mau.zulip.apitoken",
-		Instructions: "",
+		Instructions: "Get your API key from Zulip: Settings → Account & privacy → API key → Manage your API key.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{{
 				Type: bridgev2.LoginInputFieldTypeURL,
@@ -65,10 +66,14 @@ func (zl *ZulipLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 func (zl *ZulipLogin) Cancel() {}
 
 func (zl *ZulipLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
+	serverURL := strings.TrimSuffix(strings.TrimSpace(input["url"]), "/")
+	if !strings.HasPrefix(serverURL, "https://") && !strings.HasPrefix(serverURL, "http://") {
+		serverURL = "https://" + serverURL
+	}
 	meta := &zid.UserLoginMetadata{
-		URL:   input["url"],
-		Email: input["email"],
-		Token: input["token"],
+		URL:   serverURL,
+		Email: strings.TrimSpace(input["email"]),
+		Token: strings.TrimSpace(input["token"]),
 	}
 	cli, err := zulip.NewClient(
 		zulip.Credentials(meta.URL, meta.Email, meta.Token),

@@ -3,10 +3,8 @@ package messages
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"go.mau.fi/mautrix-zulip/pkg/zulip"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/messages/recipient"
@@ -40,6 +38,8 @@ type sendMessageOptions struct {
 		fieldName string
 		value     *bool
 	}
+	queueID string
+	localID string
 }
 
 type SendMessageOption func(*sendMessageOptions) error
@@ -48,13 +48,19 @@ type SendMessageOption func(*sendMessageOptions) error
 // messages ("type": "stream" or "type": "channel"), ignored otherwise.
 func ToTopic(name string) SendMessageOption {
 	return func(o *sendMessageOptions) error {
-		if strings.TrimSpace(name) == "" {
-			return errors.New("topic 'name' is empty")
-		}
-
 		o.topic.fieldName = "topic"
 		o.topic.value = &name
 
+		return nil
+	}
+}
+
+// WithLocalID sets the queue ID and local ID, which make the server include the local ID in the message event
+// sent to that queue.
+func WithLocalID(queueID, localID string) SendMessageOption {
+	return func(o *sendMessageOptions) error {
+		o.queueID = queueID
+		o.localID = localID
 		return nil
 	}
 }
@@ -140,8 +146,13 @@ func (svc *Service) SendMessage(ctx context.Context, to recipient.Recipient, con
 		}
 	}
 
-	if opts.topic.value != nil && *opts.topic.value != "" {
+	if opts.topic.value != nil {
 		msg[opts.topic.fieldName] = *opts.topic.value
+	}
+
+	if opts.queueID != "" && opts.localID != "" {
+		msg["queue_id"] = opts.queueID
+		msg["local_id"] = opts.localID
 	}
 
 	if opts.readBySender.value != nil {

@@ -20,7 +20,7 @@ func TestUnknown(t *testing.T) {
 	err := json.Unmarshal([]byte(eventExample), &v)
 	require.NoError(t, err)
 
-	assert.Equal(t, -1, v.EventID())
+	assert.Equal(t, 0, v.EventID())
 	assert.Equal(t, events.UnknownType, v.EventType())
 	assert.Equal(t, "unknown", v.EventOp())
 }

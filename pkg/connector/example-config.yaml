@@ -1,0 +1,9 @@
+# Each Zulip topic is bridged as its own room. This template is used for the room name.
+# Available variables: .Stream (channel name) and .Topic (topic name).
+topic_name_template: "#{{.Stream}} > {{.Topic}}"
+# How many of the most recently active conversations (topics and direct messages) should
+# get rooms immediately after login? Other conversations get a room when a new message arrives.
+initial_chat_limit: 100
+# Should rooms be created for channels and topics that are muted on Zulip?
+# Existing rooms are always kept in sync, and muting is mirrored to the Matrix room either way.
+bridge_muted: false

@@ -199,3 +199,12 @@ func IsCode(err error, code string) bool {
 	}
 	return e.Inner.Code() == code
 }
+
+// HTTPStatus returns the HTTP status code of an API error, or 0 if the error isn't an API error.
+func HTTPStatus(err error) int {
+	var e ErrorResp
+	if !errors.As(err, &e) {
+		return 0
+	}
+	return e.Inner.HTTPCode()
+}

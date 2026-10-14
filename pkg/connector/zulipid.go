@@ -1,7 +1,6 @@
 package connector
 
 import (
-	"go.mau.fi/util/exslices"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 
@@ -17,27 +16,40 @@ func (zc *ZulipClient) makeEventSender(id int) bridgev2.EventSender {
 	}
 }
 
-func (zc *ZulipClient) makeChannelPortalKey(streamID int) (pk networkid.PortalKey) {
+func (zc *ZulipClient) makeTopicPortalKey(streamID int, topic string) (pk networkid.PortalKey) {
 	if zc.UserLogin.Bridge.Config.SplitPortals {
 		pk.Receiver = zc.UserLogin.ID
 	}
-	pk.ID = zid.MakeChannelPortalID(streamID)
+	pk.ID = zid.MakeTopicPortalID(streamID, topic)
 	return pk
 }
 
-func (zc *ZulipClient) makePortalKey(message events.MessageData) (pk networkid.PortalKey) {
-	if zc.UserLogin.Bridge.Config.SplitPortals || message.StreamID == 0 {
-		pk.Receiver = zc.UserLogin.ID
+// makeDMPortalKey makes a portal key for a direct message conversation.
+// The user ID list may or may not include the logged-in user.
+func (zc *ZulipClient) makeDMPortalKey(userIDs []int) networkid.PortalKey {
+	others := make([]int, 0, len(userIDs))
+	for _, id := range userIDs {
+		if id != zc.ownUserID {
+			others = append(others, id)
+		}
 	}
+	if len(others) == 0 {
+		// Direct messages with yourself
+		others = append(others, zc.ownUserID)
+	}
+	return networkid.PortalKey{
+		ID:       zid.MakeDMPortalID(others),
+		Receiver: zc.UserLogin.ID,
+	}
+}
+
+func (zc *ZulipClient) makePortalKey(message *events.MessageData) networkid.PortalKey {
 	if message.StreamID != 0 {
-		pk.ID = zid.MakeChannelPortalID(message.StreamID)
-	} else {
-		pk.ID = zid.MakeDMPortalID(exslices.CastFuncFilter(message.DisplayRecipient.Users, func(from events.DisplayRecipientObject) (int, bool) {
-			if from.ID == zc.ownUserID {
-				return 0, false
-			}
-			return from.ID, true
-		}))
+		return zc.makeTopicPortalKey(message.StreamID, message.Subject)
 	}
-	return pk
+	userIDs := make([]int, len(message.DisplayRecipient.Users))
+	for i, user := range message.DisplayRecipient.Users {
+		userIDs[i] = user.ID
+	}
+	return zc.makeDMPortalKey(userIDs)
 }

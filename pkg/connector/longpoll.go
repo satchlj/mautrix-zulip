@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -13,19 +14,6 @@ import (
 	"go.mau.fi/mautrix-zulip/pkg/zulip/realtime"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/realtime/events"
 )
-
-/*func (zc *ZulipClient) syncChats(ctx context.Context) {
-	resp, err := channels.NewService(zc.Client).GetSubscribedChannels(
-		ctx, channels.IncludeSubscribersList(true),
-	)
-	if err != nil {
-		zerolog.Ctx(ctx).Err(err).Msg("Failed to get subscribed channels")
-		return
-	}
-	for _, sub := range resp.Subscriptions {
-		fmt.Println(sub)
-	}
-}*/
 
 func (zc *ZulipClient) pollQueue(ctx context.Context) {
 	rtc := realtime.NewService(zc.Client)
@@ -45,30 +33,60 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 	zc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
 
 	var connectedSent bool
+	var failingEventID, failCount int
+	const maxEventAttempts = 3
+	retryDelay := 5 * time.Second
+	sleep := func() bool {
+		select {
+		case <-time.After(retryDelay):
+			retryDelay = min(retryDelay*2, 5*time.Minute)
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 	meta := zc.UserLogin.Metadata.(*zid.UserLoginMetadata)
+	// Always register a new queue on startup, so that the initial state (unread messages, subscriptions, etc.)
+	// is fetched and the chats are synced. Old queues expire after a few minutes anyway.
+	meta.QueueID = ""
 	for {
 		if meta.QueueID == "" {
 			err := zc.registerQueue(ctx, rtc)
-			if err != nil {
+			if ctx.Err() != nil {
+				return
+			} else if err != nil {
 				log.Err(err).Msg("Failed to register event queue")
+				connectedSent = false
+				if httpStatus := zulip.HTTPStatus(err); httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden {
+					zc.UserLogin.BridgeState.Send(status.BridgeState{
+						StateEvent: status.StateBadCredentials,
+						Error:      "zulip-invalid-credentials",
+						Message:    err.Error(),
+					})
+					return
+				}
 				zc.UserLogin.BridgeState.Send(status.BridgeState{
-					StateEvent: status.StateUnknownError,
+					StateEvent: status.StateTransientDisconnect,
 					Error:      "zulip-queue-register-error",
 					Info: map[string]any{
 						"go_error": err.Error(),
 					},
 				})
-				connectedSent = false
-				// TODO retry on network errors, bad credentials on auth errors
-				return
+				if !sleep() {
+					return
+				}
+				continue
 			}
+			retryDelay = 5 * time.Second
 			zc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnected})
 			connectedSent = true
 		}
 		resp, err := rtc.GetEventsEventQueue(
 			ctx, meta.QueueID, realtime.LastEventID(meta.LastEventID), realtime.DontBlock(!connectedSent),
 		)
-		if err != nil {
+		if ctx.Err() != nil {
+			return
+		} else if err != nil {
 			log.Err(err).Msg("Failed to poll event queue")
 			if zulip.IsCode(err, zulip.ErrBadEventQueueID) {
 				meta.QueueID = ""
@@ -86,26 +104,43 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 				},
 			})
 			connectedSent = false
-			select {
-			case <-time.After(10 * time.Second):
-			case <-ctx.Done():
+			if !sleep() {
 				return
 			}
 			continue
 		}
+		retryDelay = 5 * time.Second
 		if !connectedSent {
 			zc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnected})
 			connectedSent = true
 		}
+		saveNeeded := len(resp.Events) > 0
 		for _, evt := range resp.Events {
 			ok := zc.handleZulipEvent(ctx, evt)
 			if !ok {
-				log.Warn().Int("event_id", evt.EventID()).Msg("Failed to handle event")
-				break
+				if evt.EventID() == failingEventID {
+					failCount++
+				} else {
+					failingEventID, failCount = evt.EventID(), 1
+				}
+				if failCount < maxEventAttempts {
+					log.Warn().Int("event_id", evt.EventID()).Int("attempt", failCount).Msg("Failed to handle event, retrying")
+					if !sleep() {
+						return
+					}
+					break
+				}
+				log.Error().Int("event_id", evt.EventID()).Msg("Failed to handle event repeatedly, skipping it")
 			}
-			meta.LastEventID = evt.EventID()
+			if evt.EventID() >= 0 {
+				meta.LastEventID = evt.EventID()
+			}
 		}
-		if len(resp.Events) > 0 {
+		if syncedMaxID := int(zc.pendingSyncedMaxID.Swap(0)); syncedMaxID > meta.SyncedMaxMessageID {
+			meta.SyncedMaxMessageID = syncedMaxID
+			saveNeeded = true
+		}
+		if saveNeeded {
 			err = zc.UserLogin.Save(ctx)
 			if err != nil {
 				log.Err(err).Msg("Failed to save last event ID")
@@ -114,22 +149,24 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 	}
 }
 
+var queueEventTypes = []events.EventType{
+	events.MessageType,
+	events.UpdateMessageType,
+	events.DeleteMessageType,
+	events.ReactionType,
+	events.UpdateMessageFlagsType,
+	events.TypingType,
+	events.SubscriptionType,
+	events.StreamType,
+	events.UserTopicType,
+	events.RealmUserType,
+}
+
 func (zc *ZulipClient) registerQueue(ctx context.Context, rtc *realtime.Service) error {
 	resp, err := rtc.RegisterEventQueue(
 		ctx,
-		realtime.EventTypes(
-			events.AlertWordsType,
-			events.AttachmentType,
-			events.MessageType,
-			events.PresenceType,
-			events.RealmEmojiType,
-			events.RealmUserType,
-			events.SubmessageType,
-			events.TypingType,
-			events.UpdateMessageType,
-			events.DeleteMessageType,
-			events.ReactionType,
-		),
+		realtime.EventTypes(queueEventTypes...),
+		realtime.FetchEventTypes(syncFetchEventTypes),
 		realtime.ClientCapabilities(map[realtime.ClientCapability]bool{
 			realtime.NotificationSettingsNull:   true,
 			realtime.BulkMessageDeletion:        true,
@@ -147,19 +184,19 @@ func (zc *ZulipClient) registerQueue(ctx context.Context, rtc *realtime.Service)
 		realtime.ApplyMarkdown(true),
 	)
 	if err != nil {
-		zerolog.Ctx(ctx).Err(err).Msg("Failed to register event queue")
-		zc.UserLogin.BridgeState.Send(status.BridgeState{
-			StateEvent: status.StateUnknownError,
-			Error:      "zulip-queue-register-error",
-			Info: map[string]any{
-				"go_error": err.Error(),
-			},
-		})
 		return fmt.Errorf("failed to register event queue: %w", err)
 	}
-	zerolog.Ctx(ctx).Debug().Any("queue_register_resp", resp).Msg("Registered queue")
+	zerolog.Ctx(ctx).Debug().
+		Str("queue_id", resp.QueueID).
+		Int("last_event_id", resp.LastEventID).
+		Int("max_message_id", resp.MaxMessageID).
+		Str("zulip_version", resp.ZulipVersion).
+		Int("feature_level", resp.ZulipFeatureLevel).
+		Msg("Registered event queue")
 	meta := zc.UserLogin.Metadata.(*zid.UserLoginMetadata)
 	meta.QueueID = resp.QueueID
 	meta.LastEventID = resp.LastEventID
+	zc.queueID.Store(&resp.QueueID)
+	zc.syncChats(ctx, resp)
 	return nil
 }

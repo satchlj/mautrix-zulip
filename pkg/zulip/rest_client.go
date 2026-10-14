@@ -14,6 +14,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,8 +119,33 @@ func WithTimeout(duration time.Duration) DoRequestOption {
 	}
 }
 
+const maxRateLimitRetries = 5
+
 // DoRequest is the main function to send requests to Zulip's API.
+// Requests that hit the rate limit are retried after the delay requested by the server.
 func (c *Client) DoRequest(ctx context.Context, method, path string, data map[string]any, response APIResponse, opts ...DoRequestOption) error {
+	for attempt := 0; ; attempt++ {
+		err := c.doRequestOnce(ctx, method, path, data, response, opts...)
+		if attempt >= maxRateLimitRetries || HTTPStatus(err) != http.StatusTooManyRequests {
+			return err
+		}
+		delay := 5 * time.Second
+		if withHeaders, ok := response.(interface{ HTTPHeaders() http.Header }); ok {
+			retryAfter, parseErr := strconv.ParseFloat(withHeaders.HTTPHeaders().Get("Retry-After"), 64)
+			if parseErr == nil && retryAfter > 0 {
+				delay = time.Duration(retryAfter*float64(time.Second)) + 100*time.Millisecond
+			}
+		}
+		c.logger.WarnContext(ctx, "Hit rate limit, retrying", slog.String("path", path), slog.Duration("delay", delay))
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
+func (c *Client) doRequestOnce(ctx context.Context, method, path string, data map[string]any, response APIResponse, opts ...DoRequestOption) error {
 	options := clientSendRequestOptions{
 		timeout: RESTClientDefaultTimeout,
 	}
@@ -285,6 +311,10 @@ func (c *Client) DoFileRequest(ctx context.Context, method, path string, fileNam
 
 	response.SetHTTPCode(resp.StatusCode)
 	response.SetHTTPHeaders(resp.Header)
+
+	if response.IsError() {
+		return ErrorResp{Inner: response}
+	}
 
 	return nil
 }

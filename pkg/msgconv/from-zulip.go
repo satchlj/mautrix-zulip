@@ -4,17 +4,21 @@ import (
 	"context"
 	"fmt"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/rs/zerolog"
-	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
@@ -28,17 +32,29 @@ import (
 func ToMatrix(
 	ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, source *bridgev2.UserLogin, data *events.MessageData,
 ) (*bridgev2.ConvertedMessage, error) {
-	var threadRootID *networkid.MessageID
-	if data.Subject != "" {
-		threadRootID = ptr.Ptr(zid.MakeTopicMessageID(data.Subject))
-	}
 	meta := source.Metadata.(*zid.UserLoginMetadata)
-	html, attachments, mentions, err := zuliphtml.Parse(ctx, portal.Bridge, meta.URL, data.Content)
+	var replyTo *networkid.MessageOptionalPartID
+	replyTargetExists := func(messageID int) bool {
+		target, err := portal.Bridge.DB.Message.GetFirstPartByID(ctx, source.ID, zid.MakeMessageID(messageID))
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Int("reply_to_id", messageID).Msg("Failed to check if reply target exists")
+		} else if target != nil && target.Room == portal.PortalKey {
+			replyTo = &networkid.MessageOptionalPartID{MessageID: target.ID}
+			return true
+		}
+		return false
+	}
+	html, attachments, mentions, err := zuliphtml.Parse(ctx, portal.Bridge, strings.TrimSuffix(meta.URL, "/"), data.Content, replyTargetExists)
 	if err != nil {
 		return nil, err
 	}
 	content := format.HTMLToContent(html)
 	content.Mentions = mentions
+	if data.IsMeMessage {
+		content.MsgType = event.MsgEmote
+		content.Body = strings.TrimPrefix(content.Body, "/me ")
+		content.FormattedBody = strings.Replace(content.FormattedBody, "/me ", "", 1)
+	}
 	textPart := &bridgev2.ConvertedMessagePart{
 		Type:    event.EventMessage,
 		Content: &content,
@@ -59,10 +75,42 @@ func ToMatrix(
 			parts = append(parts, attachmentToMatrix(ctx, portal.MXID, intent, meta, att))
 		}
 	}
+	for i, part := range parts {
+		if i > 0 {
+			part.ID = networkid.PartID(strconv.Itoa(i))
+		}
+	}
 	return &bridgev2.ConvertedMessage{
-		ThreadRoot: threadRootID,
-		Parts:      parts,
+		ReplyTo: replyTo,
+		Parts:   parts,
 	}, nil
+}
+
+// MakeEdit converts a re-rendered message into an edit of the existing message parts.
+func MakeEdit(existing []*database.Message, converted *bridgev2.ConvertedMessage) *bridgev2.ConvertedEdit {
+	existingByID := make(map[networkid.PartID]*database.Message, len(existing))
+	for _, part := range existing {
+		existingByID[part.PartID] = part
+	}
+	edit := &bridgev2.ConvertedEdit{}
+	for _, part := range converted.Parts {
+		existingPart, ok := existingByID[part.ID]
+		if ok {
+			edit.ModifiedParts = append(edit.ModifiedParts, part.ToEditPart(existingPart))
+			delete(existingByID, part.ID)
+		} else {
+			if edit.AddedParts == nil {
+				edit.AddedParts = &bridgev2.ConvertedMessage{}
+			}
+			edit.AddedParts.Parts = append(edit.AddedParts.Parts, part)
+		}
+	}
+	for _, part := range existing {
+		if _, stillExists := existingByID[part.PartID]; stillExists {
+			edit.DeletedParts = append(edit.DeletedParts, part)
+		}
+	}
+	return edit
 }
 
 var MediaClient = &http.Client{
