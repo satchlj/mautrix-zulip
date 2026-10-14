@@ -77,7 +77,13 @@ func (zc *ZulipClient) syncChats(ctx context.Context, state *realtime.RegisterEv
 		return
 	}
 	for _, up := range userPortals {
-		existingPortals[up.Portal] = struct{}{}
+		// Portal rows can exist without a room (e.g. if room creation failed), those need to be created again.
+		portal, err := zc.Main.Bridge.GetExistingPortalByKey(ctx, up.Portal)
+		if err != nil {
+			log.Err(err).Stringer("portal_key", up.Portal).Msg("Failed to get existing portal")
+		} else if portal != nil && portal.MXID != "" {
+			existingPortals[up.Portal] = struct{}{}
+		}
 	}
 
 	type syncTask struct {
