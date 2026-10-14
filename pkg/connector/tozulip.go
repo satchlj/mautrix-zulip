@@ -129,7 +129,11 @@ func (zc *ZulipClient) topicLink(ctx context.Context, portal *bridgev2.Portal, e
 // convertMatrixText converts the text of a Matrix message into Zulip markdown.
 func (zc *ZulipClient) convertMatrixText(ctx context.Context, portal *bridgev2.Portal, content *event.MessageEventContent) string {
 	var text string
-	if content.Format == event.FormatHTML && content.FormattedBody != "" {
+	if containsZulipMath(content.Body) {
+		// The body is the markdown the user typed. Converting the HTML would mangle the math
+		// (e.g. subscripts turned into italics, escaped backslashes), so let Zulip parse the original instead.
+		text = content.Body
+	} else if content.Format == event.FormatHTML && content.FormattedBody != "" {
 		text = zc.newHTMLParser(portal).Parse(content.FormattedBody, format.NewContext(ctx))
 	} else {
 		text = content.Body
@@ -138,6 +142,15 @@ func (zc *ZulipClient) convertMatrixText(ctx context.Context, portal *bridgev2.P
 		text = "/me " + text
 	}
 	return text
+}
+
+// containsZulipMath checks if text contains Zulip math syntax: $$inline$$ or a ```math block.
+func containsZulipMath(text string) bool {
+	if strings.Contains(text, "```math") {
+		return true
+	}
+	start := strings.Index(text, "$$")
+	return start >= 0 && strings.Contains(text[start+2:], "$$")
 }
 
 // encodeHashComponent encodes a string for use in Zulip narrow URLs, like Zulip's own encodeHashComponent.

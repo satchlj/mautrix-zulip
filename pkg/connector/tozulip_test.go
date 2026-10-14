@@ -78,3 +78,16 @@ func TestMakeEdit(t *testing.T) {
 	assert.Equal(t, networkid.PartID("1"), edit.DeletedParts[0].PartID)
 	assert.Nil(t, edit.AddedParts)
 }
+
+func TestConvertMatrixText_Math(t *testing.T) {
+	zc := &ZulipClient{}
+	text := zc.convertMatrixText(context.Background(), nil, &event.MessageEventContent{
+		MsgType:       event.MsgText,
+		Body:          `**see** $$a_1 + \frac{b}{c}$$`,
+		Format:        event.FormatHTML,
+		FormattedBody: `<strong>see</strong> $$a<em>1 + \frac{b}{c}$$`,
+	})
+	assert.Equal(t, `**see** $$a_1 + \frac{b}{c}$$`, text)
+	assert.False(t, containsZulipMath("costs $$ and more"))
+	assert.True(t, containsZulipMath("```math\nx\n```"))
+}
