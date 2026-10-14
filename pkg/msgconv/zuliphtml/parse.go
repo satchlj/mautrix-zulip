@@ -133,6 +133,7 @@ var handlers = map[atom.Atom]map[string]func(*zulipHTMLParser, *html.Node) (bool
 	atom.Span: {
 		"emoji":         (*zulipHTMLParser).processEmoji,
 		"katex-display": (*zulipHTMLParser).processKatex,
+		"katex":         (*zulipHTMLParser).processInlineKatex,
 		"user-mention":  (*zulipHTMLParser).processUserMention,
 		"topic-mention": (*zulipHTMLParser).processTopicMention,
 	},
@@ -212,6 +213,8 @@ func (zhp *zulipHTMLParser) processInlineMedia(node *html.Node) (bool, error) {
 func (zhp *zulipHTMLParser) makeAbsoluteURL(href string) string {
 	if strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "//") {
 		return zhp.baseURL + href
+	} else if strings.HasPrefix(href, "#") {
+		return zhp.baseURL + "/" + href
 	}
 	return href
 }
@@ -241,11 +244,12 @@ func (zhp *zulipHTMLParser) processSpoilerBlock(node *html.Node) (bool, error) {
 	*node = rebuildNode(node, &html.Node{
 		Type:       html.ElementNode,
 		DataAtom:   atom.Span,
-		Attr:       []html.Attribute{{Key: "data-mx-spoiler", Val: reason}},
+		Attr:       []html.Attribute{{Key: "data-mx-spoiler", Val: strings.TrimSpace(reason)}},
 		FirstChild: content.FirstChild,
 		LastChild:  content.LastChild,
 	})
-	return true, nil
+	// Not marking as handled, so that the contents of the spoiler get processed too
+	return false, nil
 }
 
 func (zhp *zulipHTMLParser) processCustomEmoji(node *html.Node) (bool, error) {
@@ -278,6 +282,34 @@ func (zhp *zulipHTMLParser) processKatex(node *html.Node) (bool, error) {
 		FirstChild: &html.Node{
 			Type: html.TextNode,
 			Data: latexSource,
+		},
+		Attr: []html.Attribute{{
+			Key: "data-mx-maths",
+			Val: latexSource,
+		}},
+	})
+	return true, nil
+}
+
+// processInlineKatex replaces inline KaTeX output (which includes both MathML and a huge HTML rendering)
+// with the Matrix math format, using the LaTeX source as the fallback text.
+func (zhp *zulipHTMLParser) processInlineKatex(node *html.Node) (bool, error) {
+	annotation := findChild(node, atom.Annotation, "")
+	if annotation == nil {
+		return false, nil
+	}
+	latexSource := nodeText(annotation)
+	*node = rebuildNode(node, &html.Node{
+		Type:     html.ElementNode,
+		DataAtom: atom.Span,
+		FirstChild: &html.Node{
+			Type:     html.ElementNode,
+			DataAtom: atom.Code,
+			Data:     "code",
+			FirstChild: &html.Node{
+				Type: html.TextNode,
+				Data: latexSource,
+			},
 		},
 		Attr: []html.Attribute{{
 			Key: "data-mx-maths",

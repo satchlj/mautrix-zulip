@@ -79,6 +79,7 @@ func (zc *ZulipClient) FetchMessages(ctx context.Context, params bridgev2.FetchM
 			allRead = false
 		}
 		data := restMessageToEvent(&msg)
+		zc.rememberSender(data)
 		if data.StreamID != 0 {
 			zc.rememberTopicName(data.StreamID, data.Subject)
 		}

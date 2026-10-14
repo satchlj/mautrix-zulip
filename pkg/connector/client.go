@@ -43,6 +43,8 @@ type ZulipClient struct {
 	recentMatrixEdits sync.Map
 	// The current event queue ID, used as the queue_id when sending messages
 	queueID atomic.Pointer[string]
+	// Sender names and avatars seen in messages, used for users that can't be fetched (e.g. system bots)
+	senderInfo sync.Map
 	// Set by background chat syncs when they finish, saved into the login metadata by the poll loop
 	pendingSyncedMaxID atomic.Int64
 }

@@ -74,6 +74,7 @@ func (zc *ZulipClient) makeMessageEvent(msg *events.MessageData, localID string)
 	if msg.StreamID != 0 {
 		zc.rememberTopicName(msg.StreamID, msg.Subject)
 	}
+	zc.rememberSender(msg)
 	return &simplevent.Message[*events.MessageData]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,

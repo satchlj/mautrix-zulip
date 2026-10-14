@@ -2,6 +2,7 @@ package msgconv
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/rs/zerolog"
@@ -50,6 +52,7 @@ func ToMatrix(
 	}
 	content := format.HTMLToContent(html)
 	content.Mentions = mentions
+	limitContentSize(&content)
 	if data.IsMeMessage {
 		content.MsgType = event.MsgEmote
 		content.Body = strings.TrimPrefix(content.Body, "/me ")
@@ -207,4 +210,30 @@ func attachmentToMatrixWithErrors(
 		Type:    event.EventMessage,
 		Content: content,
 	}, nil
+}
+
+// Matrix events are limited to 64 KiB, so leave plenty of room for the rest of the event.
+const maxContentBytes = 40 * 1024
+
+// jsonLen returns the length of a string after JSON encoding, which escapes characters like < and > as \u003c.
+func jsonLen(s string) int {
+	data, _ := json.Marshal(s)
+	return len(data)
+}
+
+// limitContentSize drops the formatted body and truncates the plaintext body if a message is too large to send.
+func limitContentSize(content *event.MessageEventContent) {
+	if jsonLen(content.Body)+jsonLen(content.FormattedBody) <= maxContentBytes {
+		return
+	}
+	content.Format = ""
+	content.FormattedBody = ""
+	if jsonLen(content.Body) > maxContentBytes {
+		// Worst case every byte expands to 6 bytes when encoded
+		cut := min(len(content.Body), maxContentBytes/6)
+		for cut > 0 && !utf8.RuneStart(content.Body[cut]) {
+			cut--
+		}
+		content.Body = content.Body[:cut] + "\n\n[message truncated]"
+	}
 }

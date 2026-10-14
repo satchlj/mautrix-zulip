@@ -19,6 +19,8 @@ import (
 
 	"go.mau.fi/mautrix-zulip/pkg/zid"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/channels"
+	"go.mau.fi/mautrix-zulip/pkg/zulip/messages"
+	"go.mau.fi/mautrix-zulip/pkg/zulip/narrow"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/realtime/events"
 	"go.mau.fi/mautrix-zulip/pkg/zulip/users"
 )
@@ -151,6 +153,20 @@ func (zc *ZulipClient) makeMemberMap(members []int) map[networkid.UserID]bridgev
 func (zc *ZulipClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	user, err := users.NewService(zc.Client).GetUser(ctx, zid.ParseUserID(ghost.ID))
 	if err != nil {
+		// Cross-realm system bots (like Notification Bot) can't be fetched from the users API,
+		// so fall back to the name and avatar from their messages.
+		userID := zid.ParseUserID(ghost.ID)
+		if _, ok := zc.senderInfo.Load(userID); !ok {
+			zc.fetchSenderInfo(ctx, userID)
+		}
+		if seen, ok := zc.senderInfo.Load(userID); ok {
+			info := seen.(*seenSender)
+			return &bridgev2.UserInfo{
+				Name:   &info.Name,
+				Avatar: wrapAvatar(0, zc.absoluteURL(info.AvatarURL), info.Email),
+				IsBot:  ptr.Ptr(true),
+			}, nil
+		}
 		return nil, err
 	}
 	return zc.wrapUserInfo(user.User)
@@ -162,6 +178,34 @@ func (zc *ZulipClient) absoluteURL(url string) string {
 		return strings.TrimSuffix(zc.UserLogin.Metadata.(*zid.UserLoginMetadata).URL, "/") + url
 	}
 	return url
+}
+
+type seenSender struct {
+	Name      string
+	Email     string
+	AvatarURL string
+}
+
+// fetchSenderInfo finds a message sent by the given user to learn their name and avatar.
+func (zc *ZulipClient) fetchSenderInfo(ctx context.Context, userID int) {
+	resp, err := messages.NewService(zc.Client).GetMessages(
+		ctx,
+		messages.Anchor("newest"),
+		messages.NumBefore(1),
+		messages.NumAfter(0),
+		messages.NarrowMessage(narrow.NewFilter().Add(narrow.New(narrow.Sender, userID))),
+	)
+	if err == nil && len(resp.Messages) > 0 {
+		zc.rememberSender(restMessageToEvent(&resp.Messages[0]))
+	}
+}
+
+func (zc *ZulipClient) rememberSender(msg *events.MessageData) {
+	zc.senderInfo.Store(msg.SenderID, &seenSender{
+		Name:      msg.SenderFullName,
+		Email:     msg.SenderEmail,
+		AvatarURL: msg.AvatarURL,
+	})
 }
 
 var AvatarClient = &http.Client{
