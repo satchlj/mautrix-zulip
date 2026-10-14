@@ -61,7 +61,7 @@ func TestParse_KatexInsideSpoiler(t *testing.T) {
 	assert.Contains(t, out, `<span data-mx-maths="x^2"><code>x^2</code></span>`)
 	assert.NotContains(t, out, "huge")
 	assert.Contains(t, out, `href="https://chat.example.com/#narrow/near/5"`)
-	assert.Contains(t, out, `data-mx-spoiler="Details"`)
+	assert.Contains(t, out, `<blockquote><p><strong>Details</strong></p><p>see `)
 }
 
 func TestParse_MathImages(t *testing.T) {

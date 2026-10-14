@@ -10,6 +10,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
+	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-zulip/pkg/msgconv"
 	"go.mau.fi/mautrix-zulip/pkg/msgconv/zulipemoji"
@@ -420,7 +421,18 @@ func (zc *ZulipClient) handleTyping(ctx context.Context, evt *events.Typing) boo
 		// Zulip clients resend typing notifications every 10 seconds
 		timeout = 15 * time.Second
 	}
-	zc.queueIfPortalExists(ctx, &simplevent.Typing{
+	portal, err := zc.Main.Bridge.GetExistingPortalByKey(ctx, portalKey)
+	if err != nil || portal == nil || portal.MXID == "" {
+		return true
+	}
+	// Ghosts only join rooms when they send their first message, and they can't send typing notifications
+	// to rooms they're not in, so skip typing notifications from users who haven't joined yet.
+	ghostMXID := zc.Main.Bridge.Matrix.GhostIntent(zid.MakeUserID(evt.Sender.UserID)).GetMXID()
+	member, err := zc.Main.Bridge.Matrix.GetMemberInfo(ctx, portal.MXID, ghostMXID)
+	if err != nil || member == nil || member.Membership != event.MembershipJoin {
+		return true
+	}
+	zc.UserLogin.QueueRemoteEvent(&simplevent.Typing{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventTyping,
 			PortalKey: portalKey,

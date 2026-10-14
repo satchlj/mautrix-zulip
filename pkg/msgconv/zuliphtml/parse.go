@@ -261,20 +261,34 @@ func (zhp *zulipHTMLParser) processInlineAudio(node *html.Node) (bool, error) {
 	return true, nil
 }
 
+// processSpoilerBlock converts a Zulip spoiler (a collapsible section) into a blockquote with the header in bold.
+// Matrix spoilers are inline, and clients render block content inside them poorly (e.g. as a large blank area),
+// so the content is shown directly instead of being hidden.
 func (zhp *zulipHTMLParser) processSpoilerBlock(node *html.Node) (bool, error) {
 	header := findChild(node, atom.Div, "spoiler-header")
 	content := findChild(node, atom.Div, "spoiler-content")
 	if header == nil || content == nil {
 		return false, nil
 	}
-	reason := nodeText(header)
-	*node = rebuildNode(node, &html.Node{
-		Type:       html.ElementNode,
-		DataAtom:   atom.Span,
-		Attr:       []html.Attribute{{Key: "data-mx-spoiler", Val: strings.TrimSpace(reason)}},
-		FirstChild: content.FirstChild,
-		LastChild:  content.LastChild,
-	})
+	title := strings.TrimSpace(nodeText(header))
+	if title == "" {
+		title = "Spoiler"
+	}
+	for child := node.FirstChild; child != nil; child = node.FirstChild {
+		node.RemoveChild(child)
+	}
+	node.DataAtom = atom.Blockquote
+	node.Data = "blockquote"
+	node.Attr = nil
+	strong := &html.Node{Type: html.ElementNode, DataAtom: atom.Strong, Data: "strong"}
+	strong.AppendChild(&html.Node{Type: html.TextNode, Data: title})
+	headerPara := &html.Node{Type: html.ElementNode, DataAtom: atom.P, Data: "p"}
+	headerPara.AppendChild(strong)
+	node.AppendChild(headerPara)
+	for child := content.FirstChild; child != nil; child = content.FirstChild {
+		content.RemoveChild(child)
+		node.AppendChild(child)
+	}
 	// Not marking as handled, so that the contents of the spoiler get processed too
 	return false, nil
 }
