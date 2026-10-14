@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -74,14 +75,39 @@ func (zc *ZulipClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		msg.RemovePending(txnID)
 		return nil, wrapZulipError(err)
 	}
-	return &bridgev2.MatrixMessageResponse{
+	response := &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
 			ID:       zid.MakeMessageID(resp.ID),
 			SenderID: zid.MakeUserID(zc.ownUserID),
 		},
 		StreamOrder:   int64(resp.ID),
 		RemovePending: txnID,
-	}, nil
+	}
+	if zc.shouldRenderSentMath(text) {
+		portalKey, sentID := msg.Portal.PortalKey, resp.ID
+		response.PostSave = func(ctx context.Context, _ *database.Message) {
+			// Run in the background, as this is called inside the portal event loop
+			go zc.renderSentMath(zc.UserLogin.Log.WithContext(zc.Main.Bridge.BackgroundCtx), portalKey, sentID)
+		}
+	}
+	return response, nil
+}
+
+func (zc *ZulipClient) shouldRenderSentMath(text string) bool {
+	return zc.Main.mathRenderer() != nil && containsZulipMath(text)
+}
+
+// renderSentMath replaces the LaTeX source in a message sent from Matrix with the rendered math,
+// by editing the Matrix message (using double puppeting) to match Zulip's rendering of the message.
+func (zc *ZulipClient) renderSentMath(ctx context.Context, portalKey networkid.PortalKey, messageID int) {
+	resp, err := messages.NewService(zc.Client).FetchSingleMessage(
+		ctx, messageID, messages.ApplyMarkdownSingleMessage(true), messages.AllowEmptyTopicNameSingleMessage(),
+	)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Int("message_id", messageID).Msg("Failed to fetch sent message to render math")
+		return
+	}
+	zc.UserLogin.QueueRemoteEvent(zc.makeRenderedEdit(portalKey, zc.ownUserID, messageID, resp.Message.Content, time.Now()))
 }
 
 // wrapZulipError converts Zulip API errors into errors that are shown nicely to the Matrix user.
@@ -147,7 +173,11 @@ func (zc *ZulipClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.Matri
 		}
 	}
 	msgID := zid.ParseMessageID(msg.EditTarget.ID)
-	zc.recentMatrixEdits.Store(msgID, time.Now())
+	if !zc.shouldRenderSentMath(text) {
+		// Ignore the echo of the edit, unless the message has math, in which case the echo is used to
+		// replace the LaTeX source in the Matrix message with the rendered math.
+		zc.recentMatrixEdits.Store(msgID, time.Now())
+	}
 	_, err := messages.NewService(zc.Client).EditMessage(ctx, msgID, messages.NewContent(text))
 	if err != nil {
 		zc.recentMatrixEdits.Delete(msgID)

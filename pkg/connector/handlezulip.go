@@ -121,21 +121,9 @@ func (zc *ZulipClient) handleUpdateMessage(ctx context.Context, evt *events.Upda
 		} else if existing == nil {
 			log.Debug().Msg("Edit target message not found")
 		} else {
-			res := zc.UserLogin.QueueRemoteEvent(&simplevent.Message[*events.UpdateMessage]{
-				EventMeta: simplevent.EventMeta{
-					Type:      bridgev2.RemoteEventEdit,
-					PortalKey: existing.Room,
-					Sender:    zc.makeEventSender(ptrOr(evt.UserID, existing.SenderID)),
-					Timestamp: time.Unix(int64(evt.EditTimestamp), 0),
-					LogContext: func(c zerolog.Context) zerolog.Context {
-						return c.Int("msg_id", evt.MessageID)
-					},
-				},
-				Data:            evt,
-				ID:              zid.MakeMessageID(evt.MessageID),
-				TargetMessage:   zid.MakeMessageID(evt.MessageID),
-				ConvertEditFunc: zc.convertEdit,
-			})
+			res := zc.UserLogin.QueueRemoteEvent(zc.makeRenderedEdit(
+				existing.Room, ptrOr(evt.UserID, existing.SenderID), evt.MessageID, *evt.RenderedContent, time.Unix(int64(evt.EditTimestamp), 0),
+			))
 			if !isSuccess(res) {
 				return false
 			}
@@ -163,17 +151,33 @@ func ptrOr(val *int, fallback networkid.UserID) int {
 	return zid.ParseUserID(fallback)
 }
 
-func (zc *ZulipClient) convertEdit(
-	ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *events.UpdateMessage,
-) (*bridgev2.ConvertedEdit, error) {
-	converted, err := msgconv.ToMatrix(ctx, portal, intent, zc.UserLogin, &events.MessageData{
-		ID:      data.MessageID,
-		Content: *data.RenderedContent,
-	}, zc.Main.mathRenderer())
-	if err != nil {
-		return nil, err
+// makeRenderedEdit creates an edit event that replaces the content of a bridged message with new Zulip-rendered HTML.
+func (zc *ZulipClient) makeRenderedEdit(
+	portalKey networkid.PortalKey, senderID, messageID int, renderedContent string, ts time.Time,
+) bridgev2.RemoteEvent {
+	return &simplevent.Message[*events.MessageData]{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventEdit,
+			PortalKey: portalKey,
+			Sender:    zc.makeEventSender(senderID),
+			Timestamp: ts,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.Int("msg_id", messageID)
+			},
+		},
+		Data:          &events.MessageData{ID: messageID, Content: renderedContent},
+		ID:            zid.MakeMessageID(messageID),
+		TargetMessage: zid.MakeMessageID(messageID),
+		ConvertEditFunc: func(
+			ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *events.MessageData,
+		) (*bridgev2.ConvertedEdit, error) {
+			converted, err := msgconv.ToMatrix(ctx, portal, intent, zc.UserLogin, data, zc.Main.mathRenderer())
+			if err != nil {
+				return nil, err
+			}
+			return msgconv.MakeEdit(existing, converted), nil
+		},
 	}
-	return msgconv.MakeEdit(existing, converted), nil
 }
 
 func (zc *ZulipClient) handleDeleteMessage(ctx context.Context, evt *events.DeleteMessage) bool {
