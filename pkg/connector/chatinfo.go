@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
@@ -40,7 +42,52 @@ func (zc *ZulipClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 	if err != nil {
 		return nil, err
 	}
-	return zc.wrapTopicInfo(stream, zc.getTopicName(portal)), nil
+	info := zc.wrapTopicInfo(stream, zc.getTopicName(portal))
+	if portal.MXID == "" {
+		// When creating the room, add the people who wrote the messages that will be backfilled, so that they
+		// have names in the room. Later senders are added to the room when their messages are bridged.
+		for _, userID := range zc.fetchRecentSenders(ctx, portal, initialMemberMessageCount) {
+			if _, exists := info.Members.MemberMap[zid.MakeUserID(userID)]; !exists {
+				info.Members.MemberMap[zid.MakeUserID(userID)] = bridgev2.ChatMember{
+					EventSender: zc.makeEventSender(userID),
+					Membership:  event.MembershipJoin,
+				}
+			}
+		}
+	}
+	return info, nil
+}
+
+// initialMemberMessageCount is how many of the most recent messages in a topic are checked for senders when
+// creating a room for the topic. It matches the default number of messages backfilled into new rooms.
+const initialMemberMessageCount = 100
+
+// fetchRecentSenders returns the IDs of the users who sent the most recent messages in a conversation.
+func (zc *ZulipClient) fetchRecentSenders(ctx context.Context, portal *bridgev2.Portal, count int) []int {
+	filter, err := zc.portalNarrow(portal)
+	if err != nil {
+		return nil
+	}
+	resp, err := messages.NewService(zc.Client).GetMessages(
+		ctx,
+		messages.Anchor("newest"),
+		messages.NumBefore(count),
+		messages.NumAfter(0),
+		messages.NarrowMessage(filter),
+		messages.ApplyMarkdownMessage(false),
+		messages.AllowEmptyTopicName(),
+	)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Msg("Failed to fetch recent messages to find room members")
+		return nil
+	}
+	senders := make([]int, 0, len(resp.Messages))
+	for _, msg := range resp.Messages {
+		if !slices.Contains(senders, msg.SenderID) {
+			senders = append(senders, msg.SenderID)
+		}
+	}
+	return senders
 }
 
 // fetchStream returns the cached info of a channel, or fetches it from the server if it's not cached.
