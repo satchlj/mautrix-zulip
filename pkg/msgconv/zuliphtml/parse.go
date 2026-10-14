@@ -13,23 +13,45 @@ import (
 	"golang.org/x/net/html/atom"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"go.mau.fi/mautrix-zulip/pkg/msgconv/zulipemoji"
 	"go.mau.fi/mautrix-zulip/pkg/zid"
 )
 
+type MathImage struct {
+	URL    id.ContentURIString
+	Width  int
+	Height int
+}
+
+type MathMode string
+
+const (
+	// MathModeInline renders all math as images inside the formatted message.
+	MathModeInline MathMode = "inline"
+	// MathModeAttachments keeps inline math as LaTeX source and sends display math as separate image attachments.
+	MathModeAttachments MathMode = "attachments"
+)
+
+type Options struct {
+	// If set, Zulip's "quote and reply" prefix is detected, and if the function returns true for the quoted
+	// message ID, the quote is removed so that it can be rendered as a native reply instead.
+	ReplyTargetExists func(int) bool
+	// If set, math is rendered into images. The function should return nil if rendering fails.
+	RenderMath func(tex string, display bool) *MathImage
+	MathMode   MathMode
+}
+
 // Parse converts Zulip-rendered message HTML into Matrix HTML.
-//
-// If replyTargetExists is non-nil, Zulip's "quote and reply" prefix is detected, and if the function returns true
-// for the quoted message ID, the quote is removed so that it can be rendered as a native reply instead.
 func Parse(
-	ctx context.Context, bridge *bridgev2.Bridge, baseURL, inputHTML string, replyTargetExists func(int) bool,
+	ctx context.Context, bridge *bridgev2.Bridge, baseURL, inputHTML string, opts Options,
 ) (outputHTML string, attachments []Attachment, mentions *event.Mentions, err error) {
 	parser := &zulipHTMLParser{
-		ctx:               ctx,
-		br:                bridge,
-		baseURL:           baseURL,
-		replyTargetExists: replyTargetExists,
+		ctx:     ctx,
+		br:      bridge,
+		baseURL: baseURL,
+		opts:    opts,
 	}
 	err = parser.Parse(inputHTML)
 	return parser.output, parser.attachments, &parser.mentions, err
@@ -39,6 +61,9 @@ type Attachment struct {
 	URL      string
 	MsgType  event.MessageType
 	FileName string
+	// If set, the attachment is a rendered math image that has already been uploaded to Matrix.
+	Math *MathImage
+	TeX  string
 }
 
 type zulipHTMLParser struct {
@@ -49,8 +74,10 @@ type zulipHTMLParser struct {
 	attachments []Attachment
 	mentions    event.Mentions
 
-	replyTargetExists func(int) bool
+	opts zulipHTMLParserOptions
 }
+
+type zulipHTMLParserOptions = Options
 
 func (zhp *zulipHTMLParser) Parse(input string) error {
 	node, err := html.Parse(strings.NewReader(input))
@@ -275,19 +302,7 @@ func (zhp *zulipHTMLParser) processKatex(node *html.Node) (bool, error) {
 	if annotation == nil {
 		return false, nil
 	}
-	latexSource := nodeText(annotation)
-	*node = rebuildNode(node, &html.Node{
-		Type:     html.ElementNode,
-		DataAtom: atom.Div,
-		FirstChild: &html.Node{
-			Type: html.TextNode,
-			Data: latexSource,
-		},
-		Attr: []html.Attribute{{
-			Key: "data-mx-maths",
-			Val: latexSource,
-		}},
-	})
+	*node = rebuildNode(node, zhp.mathNode(nodeText(annotation), true))
 	return true, nil
 }
 
@@ -298,10 +313,55 @@ func (zhp *zulipHTMLParser) processInlineKatex(node *html.Node) (bool, error) {
 	if annotation == nil {
 		return false, nil
 	}
-	latexSource := nodeText(annotation)
-	*node = rebuildNode(node, &html.Node{
+	*node = rebuildNode(node, zhp.mathNode(nodeText(annotation), false))
+	return true, nil
+}
+
+// mathNode creates the Matrix HTML for a math expression: an image if rendering is enabled,
+// or the standard data-mx-maths element with the LaTeX source as the fallback.
+func (zhp *zulipHTMLParser) mathNode(latexSource string, display bool) *html.Node {
+	delimiter := "$"
+	tag, tagName := atom.Span, "span"
+	if display {
+		delimiter = "$$"
+		tag, tagName = atom.Div, "div"
+	}
+	renderAsImage := zhp.opts.RenderMath != nil && (display || zhp.opts.MathMode != MathModeAttachments)
+	if renderAsImage {
+		if img := zhp.opts.RenderMath(latexSource, display); img != nil {
+			if display && zhp.opts.MathMode == MathModeAttachments {
+				zhp.attachments = append(zhp.attachments, Attachment{
+					MsgType:  event.MsgImage,
+					FileName: "math.png",
+					Math:     img,
+					TeX:      latexSource,
+				})
+				return &html.Node{Type: html.ElementNode, DataAtom: tag, Data: tagName}
+			}
+			return &html.Node{
+				Type:     html.ElementNode,
+				DataAtom: tag,
+				Data:     tagName,
+				FirstChild: &html.Node{
+					Type:     html.ElementNode,
+					DataAtom: atom.Img,
+					Data:     "img",
+					Attr: []html.Attribute{
+						{Key: "src", Val: string(img.URL)},
+						{Key: "alt", Val: delimiter + latexSource + delimiter},
+						{Key: "title", Val: latexSource},
+						{Key: "width", Val: strconv.Itoa(img.Width)},
+						{Key: "height", Val: strconv.Itoa(img.Height)},
+					},
+				},
+			}
+		}
+	}
+	return &html.Node{
 		Type:     html.ElementNode,
-		DataAtom: atom.Span,
+		DataAtom: tag,
+		Data:     tagName,
+		Attr:     []html.Attribute{{Key: "data-mx-maths", Val: latexSource}},
 		FirstChild: &html.Node{
 			Type:     html.ElementNode,
 			DataAtom: atom.Code,
@@ -311,12 +371,7 @@ func (zhp *zulipHTMLParser) processInlineKatex(node *html.Node) (bool, error) {
 				Data: latexSource,
 			},
 		},
-		Attr: []html.Attribute{{
-			Key: "data-mx-maths",
-			Val: latexSource,
-		}},
-	})
-	return true, nil
+	}
 }
 
 func (zhp *zulipHTMLParser) processUserMention(node *html.Node) (bool, error) {
@@ -373,7 +428,7 @@ var nearMessageRegex = regexp.MustCompile(`/near/(\d+)$`)
 //
 // If the quoted message has been bridged, both elements are removed and the message becomes a native reply.
 func (zhp *zulipHTMLParser) stripQuoteReply(body *html.Node) {
-	if zhp.replyTargetExists == nil {
+	if zhp.opts.ReplyTargetExists == nil {
 		return
 	}
 	first := nextElement(body.FirstChild)
@@ -395,7 +450,7 @@ func (zhp *zulipHTMLParser) stripQuoteReply(body *html.Node) {
 		return
 	}
 	messageID, err := strconv.Atoi(match[1])
-	if err != nil || !zhp.replyTargetExists(messageID) {
+	if err != nil || !zhp.opts.ReplyTargetExists(messageID) {
 		return
 	}
 	for node := body.FirstChild; node != nil; {

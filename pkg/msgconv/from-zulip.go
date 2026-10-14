@@ -31,8 +31,16 @@ import (
 	"go.mau.fi/mautrix-zulip/pkg/zulip/realtime/events"
 )
 
+// MathRenderer renders LaTeX into images uploaded to Matrix.
+type MathRenderer interface {
+	// RenderMath returns nil if rendering fails, in which case the LaTeX source is used instead.
+	RenderMath(ctx context.Context, intent bridgev2.MatrixAPI, roomID id.RoomID, tex string, display bool) *zuliphtml.MathImage
+	MathMode() zuliphtml.MathMode
+}
+
 func ToMatrix(
 	ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, source *bridgev2.UserLogin, data *events.MessageData,
+	mathRenderer MathRenderer,
 ) (*bridgev2.ConvertedMessage, error) {
 	meta := source.Metadata.(*zid.UserLoginMetadata)
 	var replyTo *networkid.MessageOptionalPartID
@@ -46,7 +54,14 @@ func ToMatrix(
 		}
 		return false
 	}
-	html, attachments, mentions, err := zuliphtml.Parse(ctx, portal.Bridge, strings.TrimSuffix(meta.URL, "/"), data.Content, replyTargetExists)
+	parseOpts := zuliphtml.Options{ReplyTargetExists: replyTargetExists}
+	if mathRenderer != nil {
+		parseOpts.MathMode = mathRenderer.MathMode()
+		parseOpts.RenderMath = func(tex string, display bool) *zuliphtml.MathImage {
+			return mathRenderer.RenderMath(ctx, intent, portal.MXID, tex, display)
+		}
+	}
+	html, attachments, mentions, err := zuliphtml.Parse(ctx, portal.Bridge, strings.TrimSuffix(meta.URL, "/"), data.Content, parseOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +139,22 @@ func attachmentToMatrix(
 	ctx context.Context, roomID id.RoomID, intent bridgev2.MatrixAPI, meta *zid.UserLoginMetadata,
 	attachment zuliphtml.Attachment,
 ) *bridgev2.ConvertedMessagePart {
+	if attachment.Math != nil {
+		return &bridgev2.ConvertedMessagePart{
+			Type: event.EventMessage,
+			Content: &event.MessageEventContent{
+				MsgType:  event.MsgImage,
+				Body:     attachment.FileName,
+				FileName: attachment.FileName,
+				URL:      attachment.Math.URL,
+				Info: &event.FileInfo{
+					MimeType: "image/png",
+					Width:    attachment.Math.Width,
+					Height:   attachment.Math.Height,
+				},
+			},
+		}
+	}
 	part, err := attachmentToMatrixWithErrors(ctx, roomID, intent, meta, attachment)
 	if err != nil {
 		return &bridgev2.ConvertedMessagePart{

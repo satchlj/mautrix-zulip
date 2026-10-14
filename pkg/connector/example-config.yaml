@@ -7,3 +7,17 @@ initial_chat_limit: 100
 # Should rooms be created for channels and topics that are muted on Zulip?
 # Existing rooms are always kept in sync, and muting is mirrored to the Matrix room either way.
 bridge_muted: false
+# Render LaTeX math in Zulip messages into images, as Matrix clients generally don't render math.
+# Requires Node.js and running `npm install` in the math-renderer directory of the bridge source.
+math:
+    render_images: false
+    # inline: formulas are shown as images within the message text.
+    # attachments: inline math is kept as LaTeX source, and display math is sent as separate images.
+    mode: inline
+    # Path to the node binary and the render.mjs script.
+    node_path: node
+    renderer_path: ./math-renderer/render.mjs
+    # Text and background colors of the rendered images. The background can be "transparent",
+    # e.g. with a light foreground color for clients in dark mode.
+    foreground: "#000000"
+    background: "#ffffff"

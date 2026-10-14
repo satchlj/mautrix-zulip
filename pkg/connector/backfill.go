@@ -83,7 +83,7 @@ func (zc *ZulipClient) FetchMessages(ctx context.Context, params bridgev2.FetchM
 		if data.StreamID != 0 {
 			zc.rememberTopicName(data.StreamID, data.Subject)
 		}
-		converted, err := msgconv.ToMatrix(ctx, params.Portal, params.Portal.Bridge.Bot, zc.UserLogin, data)
+		converted, err := msgconv.ToMatrix(ctx, params.Portal, params.Portal.Bridge.Bot, zc.UserLogin, data, zc.Main.mathRenderer())
 		if err != nil {
 			zerolog.Ctx(ctx).Err(err).Int("message_id", msg.ID).Msg("Failed to convert message for backfill")
 			continue

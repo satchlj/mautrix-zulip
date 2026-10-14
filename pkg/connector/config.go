@@ -14,9 +14,10 @@ import (
 var ExampleConfig string
 
 type Config struct {
-	TopicNameTemplate string `yaml:"topic_name_template"`
-	InitialChatLimit  int    `yaml:"initial_chat_limit"`
-	BridgeMuted       bool   `yaml:"bridge_muted"`
+	TopicNameTemplate string     `yaml:"topic_name_template"`
+	InitialChatLimit  int        `yaml:"initial_chat_limit"`
+	BridgeMuted       bool       `yaml:"bridge_muted"`
+	Math              MathConfig `yaml:"math"`
 
 	topicNameTemplate *template.Template `yaml:"-"`
 }
@@ -27,6 +28,15 @@ func (zc *ZulipConnector) GetConfig() (example string, data any, upgrader up.Upg
 		Blocks:         [][]string{},
 		Base:           ExampleConfig,
 	}
+}
+
+type MathConfig struct {
+	RenderImages bool   `yaml:"render_images"`
+	Mode         string `yaml:"mode"`
+	NodePath     string `yaml:"node_path"`
+	RendererPath string `yaml:"renderer_path"`
+	Foreground   string `yaml:"foreground"`
+	Background   string `yaml:"background"`
 }
 
 type umConfig Config
@@ -42,6 +52,13 @@ func (c *Config) UnmarshalYAML(node *yaml.Node) error {
 func (c *Config) PostProcess() (err error) {
 	if c.TopicNameTemplate == "" {
 		c.TopicNameTemplate = "#{{.Stream}} > {{.Topic}}"
+	}
+	switch c.Math.Mode {
+	case "":
+		c.Math.Mode = "inline"
+	case "inline", "attachments":
+	default:
+		return fmt.Errorf("invalid math.mode %q", c.Math.Mode)
 	}
 	c.topicNameTemplate, err = template.New("topic_name").Parse(c.TopicNameTemplate)
 	if err != nil {
@@ -65,4 +82,10 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "topic_name_template")
 	helper.Copy(up.Int, "initial_chat_limit")
 	helper.Copy(up.Bool, "bridge_muted")
+	helper.Copy(up.Bool, "math", "render_images")
+	helper.Copy(up.Str, "math", "mode")
+	helper.Copy(up.Str, "math", "node_path")
+	helper.Copy(up.Str, "math", "renderer_path")
+	helper.Copy(up.Str, "math", "foreground")
+	helper.Copy(up.Str, "math", "background")
 }

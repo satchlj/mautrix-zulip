@@ -94,7 +94,7 @@ func (zc *ZulipClient) makeMessageEvent(msg *events.MessageData, localID string)
 		ID:            zid.MakeMessageID(msg.ID),
 		TransactionID: networkid.TransactionID(localID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data *events.MessageData) (*bridgev2.ConvertedMessage, error) {
-			return msgconv.ToMatrix(ctx, portal, intent, zc.UserLogin, data)
+			return msgconv.ToMatrix(ctx, portal, intent, zc.UserLogin, data, zc.Main.mathRenderer())
 		},
 	}
 }
@@ -169,7 +169,7 @@ func (zc *ZulipClient) convertEdit(
 	converted, err := msgconv.ToMatrix(ctx, portal, intent, zc.UserLogin, &events.MessageData{
 		ID:      data.MessageID,
 		Content: *data.RenderedContent,
-	})
+	}, zc.Main.mathRenderer())
 	if err != nil {
 		return nil, err
 	}

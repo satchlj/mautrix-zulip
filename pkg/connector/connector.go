@@ -9,6 +9,8 @@ import (
 type ZulipConnector struct {
 	Bridge *bridgev2.Bridge
 	Config Config
+
+	math *mathImageRenderer
 }
 
 var _ bridgev2.NetworkConnector = (*ZulipConnector)(nil)
@@ -18,6 +20,9 @@ func (zc *ZulipConnector) Init(bridge *bridgev2.Bridge) {
 }
 
 func (zc *ZulipConnector) Start(ctx context.Context) error {
+	if zc.Config.Math.RenderImages {
+		zc.math = newMathImageRenderer(&zc.Config.Math, zc.Bridge.Log)
+	}
 	return nil
 }
 
