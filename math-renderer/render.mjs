@@ -18,6 +18,9 @@ const SCALE = Number(process.env.MATH_SCALE || 3);
 const FOREGROUND = process.env.MATH_FOREGROUND || "#000000";
 const BACKGROUND = process.env.MATH_BACKGROUND || "#ffffff";
 const PADDING_PX = Number(process.env.MATH_PADDING_PX || 2);
+// Optional outline color around the glyphs, which keeps transparent images readable on both light and dark backgrounds
+const HALO = process.env.MATH_HALO || "";
+const HALO_RADIUS = Number(process.env.MATH_HALO_RADIUS || 0.6);
 
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
@@ -45,7 +48,11 @@ function render(source, display) {
 	// Wrap in another SVG to add padding around the formula
 	const outerWidth = width + PADDING_PX * 2;
 	const outerHeight = height + PADDING_PX * 2;
-	const padded = `<svg xmlns="http://www.w3.org/2000/svg" width="${outerWidth}" height="${outerHeight}"><g transform="translate(${PADDING_PX} ${PADDING_PX})">${svgText}</g></svg>`;
+	const halo = HALO
+		? `<defs><filter id="halo" x="-10%" y="-10%" width="120%" height="120%"><feMorphology in="SourceAlpha" operator="dilate" radius="${HALO_RADIUS}" result="dilated"/><feFlood flood-color="${HALO}"/><feComposite in2="dilated" operator="in" result="outline"/><feMerge><feMergeNode in="outline"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`
+		: "";
+	const filterAttr = HALO ? ` filter="url(#halo)"` : "";
+	const padded = `<svg xmlns="http://www.w3.org/2000/svg" width="${outerWidth}" height="${outerHeight}">${halo}<g transform="translate(${PADDING_PX} ${PADDING_PX})"${filterAttr}>${svgText}</g></svg>`;
 	const png = new Resvg(padded, {
 		fitTo: { mode: "zoom", value: SCALE },
 		// Leave the background transparent if requested

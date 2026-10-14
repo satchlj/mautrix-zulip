@@ -17,7 +17,9 @@ math:
     # Path to the node binary and the render.mjs script.
     node_path: node
     renderer_path: ./math-renderer/render.mjs
-    # Text and background colors of the rendered images. The background can be "transparent",
-    # e.g. with a light foreground color for clients in dark mode.
+    # Text and background colors of the rendered images. The background can be "transparent".
     foreground: "#000000"
-    background: "#ffffff"
+    background: transparent
+    # Optional outline color around the glyphs. With a transparent background, a halo in the opposite color
+    # of the foreground keeps formulas readable in both light and dark mode.
+    halo: "#ffffff"

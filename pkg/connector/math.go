@@ -40,6 +40,7 @@ func newMathImageRenderer(cfg *MathConfig, log zerolog.Logger) *mathImageRendere
 			RendererPath: cfg.RendererPath,
 			Foreground:   cfg.Foreground,
 			Background:   cfg.Background,
+			Halo:         cfg.Halo,
 		}, log.With().Str("component", "math renderer").Logger()),
 		mode:  zuliphtml.MathMode(cfg.Mode),
 		cache: make(map[mathCacheKey]*zuliphtml.MathImage),

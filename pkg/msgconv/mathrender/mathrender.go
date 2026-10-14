@@ -30,6 +30,7 @@ type Options struct {
 	RendererPath string
 	Foreground   string
 	Background   string
+	Halo         string
 }
 
 type request struct {
@@ -69,6 +70,7 @@ func (r *Renderer) start() error {
 	cmd.Env = append(os.Environ(),
 		"MATH_FOREGROUND="+r.opts.Foreground,
 		"MATH_BACKGROUND="+r.opts.Background,
+		"MATH_HALO="+r.opts.Halo,
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

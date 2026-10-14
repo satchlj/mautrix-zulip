@@ -37,6 +37,7 @@ type MathConfig struct {
 	RendererPath string `yaml:"renderer_path"`
 	Foreground   string `yaml:"foreground"`
 	Background   string `yaml:"background"`
+	Halo         string `yaml:"halo"`
 }
 
 type umConfig Config
@@ -88,4 +89,5 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "math", "renderer_path")
 	helper.Copy(up.Str, "math", "foreground")
 	helper.Copy(up.Str, "math", "background")
+	helper.Copy(up.Str, "math", "halo")
 }
