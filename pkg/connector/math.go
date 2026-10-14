@@ -71,7 +71,9 @@ func (mir *mathImageRenderer) RenderMath(
 		}
 		return nil
 	}
-	mxc, _, err := intent.UploadMedia(ctx, roomID, rendered.PNG, "math.png", "image/png")
+	// Images inside formatted bodies can't reference encrypted files, so upload without a room ID to skip
+	// encryption even in encrypted rooms. This also lets the cached upload be reused in any room.
+	mxc, _, err := intent.UploadMedia(ctx, "", rendered.PNG, "math.png", "image/png")
 	if err != nil || mxc == "" {
 		log.Err(err).Msg("Failed to upload rendered math")
 		return nil
