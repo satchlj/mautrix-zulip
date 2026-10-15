@@ -81,3 +81,22 @@ func TestParse_MathImages(t *testing.T) {
 	assert.Equal(t, "x^2", atts[0].TeX)
 	assert.Contains(t, out, `<span data-mx-maths="K(w)"><code>K(w)</code></span>`)
 }
+
+func TestParse_InlineImage(t *testing.T) {
+	input := "<p>That's not a blogpost, it's a novella <br>\n<img alt=\"Screenshot 2026-10-15 at 17.55.30.png\" class=\"inline-image\" data-original-content-type=\"image/png\" data-original-dimensions=\"672x578\" data-original-src=\"/user_uploads/96296/abc/Screenshot.png\" src=\"/user_uploads/thumbnail/96296/abc/Screenshot.png/840x560.webp\"></p>\n<p>after</p>"
+	out, attachments, _, err := Parse(context.Background(), nil, "https://chat.example.com", input, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, "<p>That&#39;s not a blogpost, it&#39;s a novella</p>\n<p>after</p>", out)
+	require.Len(t, attachments, 1)
+	assert.Equal(t, "https://chat.example.com/user_uploads/96296/abc/Screenshot.png", attachments[0].URL)
+	assert.Equal(t, "Screenshot 2026-10-15 at 17.55.30.png", attachments[0].FileName)
+}
+
+func TestParse_ImageOnly(t *testing.T) {
+	input := `<p><img alt="a.png" class="inline-image" data-original-src="/user_uploads/1/x/a.png" src="/user_uploads/thumbnail/1/x/a.png/840x560.webp"><img alt="b.png" class="image-loading-placeholder" data-original-src="/user_uploads/1/y/b.png" src="/static/images/loading/loader-black.svg"></p>`
+	out, attachments, _, err := Parse(context.Background(), nil, "https://chat.example.com", input, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, "", strings.TrimSpace(out))
+	require.Len(t, attachments, 2)
+	assert.Equal(t, "https://chat.example.com/user_uploads/1/y/b.png", attachments[1].URL)
+}

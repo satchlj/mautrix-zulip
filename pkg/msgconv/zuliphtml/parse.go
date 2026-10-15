@@ -113,8 +113,11 @@ func (zhp *zulipHTMLParser) Parse(input string) error {
 }
 
 func (zhp *zulipHTMLParser) processChildren(node *html.Node) error {
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
+	for child := node.FirstChild; child != nil; {
+		// Handlers may remove the node from the tree, which clears its NextSibling
+		next := child.NextSibling
 		err := zhp.processSingleNode(child)
+		child = next
 		if err != nil {
 			return err
 		}
@@ -165,7 +168,9 @@ var handlers = map[atom.Atom]map[string]func(*zulipHTMLParser, *html.Node) (bool
 		"topic-mention": (*zulipHTMLParser).processTopicMention,
 	},
 	atom.Img: {
-		"emoji": (*zulipHTMLParser).processCustomEmoji,
+		"emoji":                     (*zulipHTMLParser).processCustomEmoji,
+		"inline-image":              (*zulipHTMLParser).processInlineImage,
+		"image-loading-placeholder": (*zulipHTMLParser).processInlineImage,
 	},
 	atom.Audio: {
 		"": (*zulipHTMLParser).processInlineAudio,
@@ -234,6 +239,50 @@ func (zhp *zulipHTMLParser) processInlineMedia(node *html.Node) (bool, error) {
 		FileName: title,
 	})
 	node.Parent.RemoveChild(node)
+	return true, nil
+}
+
+// processInlineImage handles the inline image format used by newer Zulip servers, where an uploaded image is
+// a bare <img> inside the paragraph that points at a server-side thumbnail, with the original in data-original-src.
+func (zhp *zulipHTMLParser) processInlineImage(node *html.Node) (bool, error) {
+	src, ok := getAttribute(node.Attr, "data-original-src")
+	if !ok || src == "" {
+		src, ok = getAttribute(node.Attr, "src")
+		if !ok || src == "" || slices.Contains(getClass(node.Attr), "image-loading-placeholder") {
+			return false, nil
+		}
+	}
+	msgType := event.MsgImage
+	if contentType, _ := getAttribute(node.Attr, "data-original-content-type"); strings.HasPrefix(contentType, "video/") {
+		msgType = event.MsgVideo
+	}
+	title, _ := getAttribute(node.Attr, "alt")
+	if title == "" {
+		parts := strings.SplitN(src, "?", 2)
+		title = path.Base(parts[0])
+	}
+	zhp.attachments = append(zhp.attachments, Attachment{
+		URL:      zhp.makeAbsoluteURL(src),
+		MsgType:  msgType,
+		FileName: title,
+	})
+	parent := node.Parent
+	parent.RemoveChild(node)
+	// Zulip puts a line break before the image, which would leave a dangling newline in the caption
+	for last := parent.LastChild; last != nil; last = parent.LastChild {
+		if (last.Type == html.TextNode && strings.TrimSpace(last.Data) == "") ||
+			(last.Type == html.ElementNode && last.DataAtom == atom.Br) {
+			parent.RemoveChild(last)
+		} else {
+			break
+		}
+	}
+	if last := parent.LastChild; last != nil && last.Type == html.TextNode {
+		last.Data = strings.TrimRight(last.Data, " \t\n")
+	}
+	if parent.FirstChild == nil && parent.DataAtom == atom.P && parent.Parent != nil {
+		parent.Parent.RemoveChild(parent)
+	}
 	return true, nil
 }
 
