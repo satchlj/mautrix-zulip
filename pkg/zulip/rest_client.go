@@ -200,7 +200,7 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, data ma
 	defer func() { _ = resp.Body.Close() }()
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return fmt.Errorf("cannot read response body: %s", err)
+		return fmt.Errorf("cannot read response body (HTTP %d): %w", resp.StatusCode, err)
 	}
 
 	headersGroup := []slog.Attr{}
@@ -296,7 +296,7 @@ func (c *Client) DoFileRequest(ctx context.Context, method, path string, fileNam
 	defer func() { _ = resp.Body.Close() }()
 
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return fmt.Errorf("cannot read response body: %w", err)
+		return fmt.Errorf("cannot read response body (HTTP %d): %w", resp.StatusCode, err)
 	}
 
 	headersGroup := []slog.Attr{}

@@ -35,6 +35,10 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 	var connectedSent bool
 	var failingEventID, failCount int
 	const maxEventAttempts = 3
+	// Zulip Cloud occasionally serves error pages for a few seconds. Only report a disconnection once polling
+	// has been failing for a while, so that short blips don't show up as disconnections in clients.
+	const pollErrorGracePeriod = time.Minute
+	var pollFailingSince time.Time
 	retryDelay := 5 * time.Second
 	sleep := func() bool {
 		select {
@@ -96,20 +100,26 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 				}
 				continue
 			}
-			zc.UserLogin.BridgeState.Send(status.BridgeState{
-				StateEvent: status.StateTransientDisconnect,
-				Error:      "zulip-event-poll-error",
-				Info: map[string]any{
-					"go_error": err.Error(),
-				},
-			})
-			connectedSent = false
+			if pollFailingSince.IsZero() {
+				pollFailingSince = time.Now()
+			}
+			if time.Since(pollFailingSince) >= pollErrorGracePeriod {
+				zc.UserLogin.BridgeState.Send(status.BridgeState{
+					StateEvent: status.StateTransientDisconnect,
+					Error:      "zulip-event-poll-error",
+					Info: map[string]any{
+						"go_error": err.Error(),
+					},
+				})
+				connectedSent = false
+			}
 			if !sleep() {
 				return
 			}
 			continue
 		}
 		retryDelay = 5 * time.Second
+		pollFailingSince = time.Time{}
 		if !connectedSent {
 			zc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnected})
 			connectedSent = true
