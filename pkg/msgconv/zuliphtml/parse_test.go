@@ -61,7 +61,8 @@ func TestParse_KatexInsideSpoiler(t *testing.T) {
 	assert.Contains(t, out, `<span data-mx-maths="x^2"><code>x^2</code></span>`)
 	assert.NotContains(t, out, "huge")
 	assert.Contains(t, out, `href="https://chat.example.com/#narrow/near/5"`)
-	assert.Contains(t, out, `<blockquote><p><strong>Details</strong></p><p>see `)
+	assert.Contains(t, out, `<details><summary>Details</summary>`)
+	assert.Contains(t, out, `<p>see `)
 }
 
 func TestParse_MathImages(t *testing.T) {
@@ -99,4 +100,16 @@ func TestParse_ImageOnly(t *testing.T) {
 	assert.Equal(t, "", strings.TrimSpace(out))
 	require.Len(t, attachments, 2)
 	assert.Equal(t, "https://chat.example.com/user_uploads/1/y/b.png", attachments[1].URL)
+}
+
+func TestParse_SpoilerBlock(t *testing.T) {
+	input := "<div class=\"spoiler-block\"><div class=\"spoiler-header\">\n<p>Part <strong>6</strong></p>\n</div><div class=\"spoiler-content\" aria-hidden=\"true\">\n<p>hidden</p>\n</div></div><p>after</p>"
+	out, _, _, err := Parse(context.Background(), nil, "https://chat.example.com", input, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, "<details><summary>Part <strong>6</strong></summary>\n<p>hidden</p>\n</details><p>after</p>", out)
+
+	input = `<div class="spoiler-block"><div class="spoiler-header"></div><div class="spoiler-content" aria-hidden="true"><p>hidden</p></div></div>`
+	out, _, _, err = Parse(context.Background(), nil, "https://chat.example.com", input, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, "<details><summary>Spoiler</summary><p>hidden</p></details>", out)
 }

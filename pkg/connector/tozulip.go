@@ -134,10 +134,11 @@ func (zc *ZulipClient) convertMatrixText(ctx context.Context, portal *bridgev2.P
 		// (e.g. subscripts turned into italics, escaped backslashes), so let Zulip parse the original instead.
 		text = content.Body
 	} else if content.Format == event.FormatHTML && content.FormattedBody != "" {
-		text = zc.newHTMLParser(portal).Parse(content.FormattedBody, format.NewContext(ctx))
+		text = zc.newHTMLParser(portal).Parse(detailsHTMLToMarkers(content.FormattedBody), format.NewContext(ctx))
 	} else {
 		text = content.Body
 	}
+	text = convertCollapsibleSections(text)
 	if content.MsgType == event.MsgEmote {
 		text = "/me " + text
 	}

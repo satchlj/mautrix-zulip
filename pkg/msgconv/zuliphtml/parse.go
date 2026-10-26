@@ -310,30 +310,37 @@ func (zhp *zulipHTMLParser) processInlineAudio(node *html.Node) (bool, error) {
 	return true, nil
 }
 
-// processSpoilerBlock converts a Zulip spoiler (a collapsible section) into a blockquote with the header in bold.
-// Matrix spoilers are inline, and clients render block content inside them poorly (e.g. as a large blank area),
-// so the content is shown directly instead of being hidden.
+// processSpoilerBlock converts a Zulip spoiler (a collapsible section) into a <details> element with the header
+// as the <summary>. Clients that don't support <details> show the header and content directly.
 func (zhp *zulipHTMLParser) processSpoilerBlock(node *html.Node) (bool, error) {
 	header := findChild(node, atom.Div, "spoiler-header")
 	content := findChild(node, atom.Div, "spoiler-content")
 	if header == nil || content == nil {
 		return false, nil
 	}
-	title := strings.TrimSpace(nodeText(header))
-	if title == "" {
-		title = "Spoiler"
+	// The header is usually a single paragraph, but <summary> should only contain inline content
+	headerContent := header
+	if para := findChild(header, atom.P, ""); para != nil {
+		headerContent = para
+	}
+	summary := &html.Node{Type: html.ElementNode, DataAtom: atom.Summary, Data: "summary"}
+	for child := headerContent.FirstChild; child != nil; child = headerContent.FirstChild {
+		headerContent.RemoveChild(child)
+		summary.AppendChild(child)
+	}
+	if strings.TrimSpace(nodeText(summary)) == "" {
+		for child := summary.FirstChild; child != nil; child = summary.FirstChild {
+			summary.RemoveChild(child)
+		}
+		summary.AppendChild(&html.Node{Type: html.TextNode, Data: "Spoiler"})
 	}
 	for child := node.FirstChild; child != nil; child = node.FirstChild {
 		node.RemoveChild(child)
 	}
-	node.DataAtom = atom.Blockquote
-	node.Data = "blockquote"
+	node.DataAtom = atom.Details
+	node.Data = "details"
 	node.Attr = nil
-	strong := &html.Node{Type: html.ElementNode, DataAtom: atom.Strong, Data: "strong"}
-	strong.AppendChild(&html.Node{Type: html.TextNode, Data: title})
-	headerPara := &html.Node{Type: html.ElementNode, DataAtom: atom.P, Data: "p"}
-	headerPara.AppendChild(strong)
-	node.AppendChild(headerPara)
+	node.AppendChild(summary)
 	for child := content.FirstChild; child != nil; child = content.FirstChild {
 		content.RemoveChild(child)
 		node.AppendChild(child)

@@ -91,3 +91,45 @@ func TestConvertMatrixText_Math(t *testing.T) {
 	assert.False(t, containsZulipMath("costs $$ and more"))
 	assert.True(t, containsZulipMath("```math\nx\n```"))
 }
+
+func TestConvertMatrixText_Collapsible(t *testing.T) {
+	zc := &ZulipClient{}
+	convert := func(body, formatted string) string {
+		content := &event.MessageEventContent{MsgType: event.MsgText, Body: body}
+		if formatted != "" {
+			content.Format = event.FormatHTML
+			content.FormattedBody = formatted
+		}
+		return zc.convertMatrixText(context.Background(), nil, content)
+	}
+	// Typed into Beeper's composer, which escapes the HTML tags
+	assert.Equal(t,
+		"```spoiler Goals for the next **1–3** months\nHidden **bold** text\n\n* item one\n```",
+		convert(
+			"<details><summary>Goals for the next 1–3 months</summary>\n\nHidden bold text\n\nitem one\n\n</details>",
+			"&lt;details&gt;&lt;summary&gt;Goals for the next <strong>1–3</strong> months&lt;/summary&gt;\n\n<p>Hidden <strong>bold</strong> text</p>\n<ul>\n<li>item one</li>\n</ul>\n&lt;/details&gt;",
+		),
+	)
+	// Real <details> elements, e.g. when editing a message that came from Zulip
+	assert.Equal(t,
+		"```spoiler Part **6**\nhidden\n```\n\nafter",
+		convert("Part 6\nhidden\nafter", "<details><summary>Part <strong>6</strong></summary>\n<p>hidden</p>\n</details><p>after</p>"),
+	)
+	// Plain text, nested sections, and sections on a single line
+	assert.Equal(t,
+		"before\n````spoiler Outer\nfirst\n```spoiler Inner\nsecond\n```\n````\nafter",
+		convert("before\n<details><summary>Outer</summary>\nfirst\n<details><summary>Inner</summary>second</details>\n</details>\nafter", ""),
+	)
+	assert.Equal(t, "```spoiler\nno title\n```", convert("<details>no title</details>", ""))
+	// Code blocks and unclosed sections are left alone
+	assert.Equal(t,
+		"```html\n<details><summary>x</summary>\n</details>\n```",
+		convert("", "<pre><code class=\"language-html\">&lt;details&gt;&lt;summary&gt;x&lt;/summary&gt;\n&lt;/details&gt;\n</code></pre>"),
+	)
+	assert.Equal(t, "<details><summary>Open</summary>\nnever closed", convert("<details><summary>Open</summary>\nnever closed", ""))
+	// Zulip's own syntax typed into Beeper loses the title, but stays collapsible
+	assert.Equal(t,
+		"```spoiler\nHidden **bold** text\n- item one\n```",
+		convert("Hidden **bold** text\n- item one", "<pre><code class=\"language-spoiler\">Hidden **bold** text\n- item one\n</code></pre>"),
+	)
+}
