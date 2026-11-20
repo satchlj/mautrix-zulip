@@ -96,14 +96,26 @@ func (zl *ZulipLogin) SubmitUserInput(ctx context.Context, input map[string]stri
 			Avatar: "",
 		},
 		Metadata: meta,
-	}, &bridgev2.NewLoginParams{})
+	}, &bridgev2.NewLoginParams{
+		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
+			// Mautrix v0.31 reuses the login without stopping its old client.
+			if login.Client != nil {
+				login.Client.Disconnect()
+			}
+			return zl.Main.LoadUserLogin(ctx, login)
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-	go ul.Client.Connect(ul.Log.WithContext(zl.Main.Bridge.BackgroundCtx))
+	ul.Client.Connect(ul.Log.WithContext(zl.Main.Bridge.BackgroundCtx))
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       "fi.mau.zulip.complete",
 		Instructions: fmt.Sprintf("Successfully logged in as %s", me.FullName),
+		CompleteParams: &bridgev2.LoginCompleteParams{
+			UserLoginID: ul.ID,
+			UserLogin:   ul,
+		},
 	}, nil
 }

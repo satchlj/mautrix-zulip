@@ -19,17 +19,10 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 	rtc := realtime.NewService(zc.Client)
 	log := zc.UserLogin.Log.With().Str("component", "zulip poll").Logger()
 	ctx = log.WithContext(ctx)
-	stopChan := make(chan struct{})
-	ctx, cancel := context.WithCancel(ctx)
-	defer func() {
-		cancel()
-		close(stopChan)
-		zc.UserLogin.Log.Debug().Msg("Polling stopped")
-	}()
-	if oldCancel := zc.stopPoll.Swap(&cancel); oldCancel != nil {
-		(*oldCancel)()
+	defer zc.UserLogin.Log.Debug().Msg("Polling stopped")
+	if ctx.Err() != nil {
+		return
 	}
-	zc.pollStopped.Store(&stopChan)
 	zc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
 
 	var connectedSent bool
@@ -92,6 +85,14 @@ func (zc *ZulipClient) pollQueue(ctx context.Context) {
 			return
 		} else if err != nil {
 			log.Err(err).Msg("Failed to poll event queue")
+			if httpStatus := zulip.HTTPStatus(err); httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden {
+				zc.UserLogin.BridgeState.Send(status.BridgeState{
+					StateEvent: status.StateBadCredentials,
+					Error:      "zulip-invalid-credentials",
+					Message:    err.Error(),
+				})
+				return
+			}
 			if zulip.IsCode(err, zulip.ErrBadEventQueueID) {
 				meta.QueueID = ""
 				err = zc.UserLogin.Save(ctx)

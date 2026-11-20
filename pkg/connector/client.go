@@ -23,8 +23,9 @@ type ZulipClient struct {
 	UserLogin *bridgev2.UserLogin
 	Client    *zulip.Client
 
-	stopPoll    atomic.Pointer[context.CancelFunc]
-	pollStopped atomic.Pointer[chan struct{}]
+	pollLock    sync.Mutex
+	stopPoll    context.CancelFunc
+	pollStopped chan struct{}
 	ownUserID   int
 
 	cacheLock sync.RWMutex
@@ -85,21 +86,36 @@ func (zc *ZulipConnector) LoadUserLogin(ctx context.Context, login *bridgev2.Use
 var _ bridgev2.NetworkAPI = (*ZulipClient)(nil)
 
 func (zc *ZulipClient) Connect(ctx context.Context) {
-	go zc.pollQueue(ctx)
+	zc.pollLock.Lock()
+	defer zc.pollLock.Unlock()
+	zc.stopPolling()
+	ctx, zc.stopPoll = context.WithCancel(ctx)
+	done := make(chan struct{})
+	zc.pollStopped = done
+	go func() {
+		defer close(done)
+		zc.pollQueue(ctx)
+	}()
 }
 
 func (zc *ZulipClient) Disconnect() {
-	pollStop := zc.pollStopped.Load()
-	if cancel := zc.stopPoll.Swap(nil); cancel != nil {
-		(*cancel)()
+	zc.pollLock.Lock()
+	defer zc.pollLock.Unlock()
+	zc.stopPolling()
+}
+
+func (zc *ZulipClient) stopPolling() {
+	if zc.stopPoll == nil {
+		return
 	}
-	if pollStop != nil {
-		select {
-		case <-*pollStop:
-		case <-time.After(5 * time.Second):
-			zc.UserLogin.Log.Warn().Msg("Timed out waiting for poll to stop")
-		}
+	zc.stopPoll()
+	select {
+	case <-zc.pollStopped:
+	case <-time.After(5 * time.Second):
+		zc.UserLogin.Log.Warn().Msg("Timed out waiting for poll to stop")
 	}
+	zc.stopPoll = nil
+	zc.pollStopped = nil
 }
 
 func (zc *ZulipClient) IsLoggedIn() bool {
