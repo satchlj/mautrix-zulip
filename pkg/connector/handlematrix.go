@@ -35,6 +35,16 @@ var (
 var localIDCounter atomic.Uint64
 
 func (zc *ZulipClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+	// A message the bridge put in the room itself. Creating a room backfills it, and the batch
+	// send leaves our own messages without the double puppet marker in unencrypted rooms, so
+	// they come back as if sent from Matrix: our first message in a new topic or DM was posted
+	// to Zulip a second time. It's already there.
+	if existing, err := zc.Main.Bridge.DB.Message.GetPartByMXID(ctx, msg.Event.ID); err != nil {
+		return nil, err
+	} else if existing != nil {
+		zerolog.Ctx(ctx).Debug().Str("message_id", string(existing.ID)).Msg("Ignoring Matrix echo of a message bridged from Zulip")
+		return &bridgev2.MatrixMessageResponse{DB: existing}, nil
+	}
 	parsed, err := zid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return nil, err
